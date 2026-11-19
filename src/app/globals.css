@@ -1,0 +1,583 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --background-subtle: #f6f8fa;
+  --surface-muted: #f8fafc;
+  --foreground: #0f172a;
+  --foreground-muted: #475569;
+  --border: #e6eef3;
+  --border-strong: #cbd5e1;
+  --focus-ring: #0d9488;
+  --teal: #0d9488;
+  --teal-strong: #0b7d72;
+  --teal-foreground: #ffffff;
+  --teal-subtle: #eafaf5;
+  --teal-ring: rgba(13, 148, 136, 0.25);
+  --danger: #b91c1c;
+  --danger-hover: #991b1b;
+  --danger-subtle: #fdecec;
+  --danger-border: #fecaca;
+  --success: #15803d;
+  --success-subtle: #dcfce7;
+  --warning: #b45309;
+  --warning-subtle: #fef3c7;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06);
+
+  /* Shared mobile navigation height. Used by the fixed bottom bar,
+     the page bottom padding, and sheets that must sit above the bar. */
+  --mobile-nav-height: 64px;
+
+  /* Height of the mobile top header (brand + section label). */
+  --mobile-header-height: 52px;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background-subtle);
+  color: var(--foreground);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--teal-subtle);
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Mobile tap-zoom guard: narrowly scoped to interactive controls only.
+   This avoids disabling scrolling or breaking forms, maps, and touch navigation. */
+.zoom-pinch-ok,
+.zoom-pinch-ok::before,
+.zoom-pinch-ok::after {
+  touch-action: manipulation;
+}
+
+/* Long Thai addresses and notes must wrap instead of pushing the layout wide. */
+.text-wrap-safe {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Height of the fixed mobile bottom navigation, including the safe area. */
+.page-content {
+  padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .page-content {
+    padding-bottom: 0;
+  }
+}
+
+.mobile-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  background: var(--background);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.mobile-nav-inner {
+  height: var(--mobile-nav-height);
+}
+
+/* Sticky mobile header. Keeps the brand and current section visible so users
+   always know where they are, without competing with the bottom bar. */
+.mobile-top-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--background);
+  border-bottom: 1px solid var(--border);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.mobile-header-inner {
+  height: var(--mobile-header-height);
+}
+
+/* Modal sheets must always sit above the fixed bottom navigation.
+
+   The overlay covers the *visual* viewport, not the layout viewport. On mobile
+the on-screen keyboard shrinks `visualViewport` while the layout viewport keeps
+its full height, so a plain `inset: 0` overlay stayed as tall as the layout
+viewport and any dialog inside it was laid out (and centered) behind the
+keyboard — the dialog opened "pushed down" whenever the keyboard was already
+open. Anchoring the overlay to the visible area fixes the root cause for every
+dialog: the geometry is already correct at the moment the modal opens, without
+any per-modal measurement or hardcoded offsets.
+
+   Fallbacks: `100vh` then `100dvh` when the visual-viewport variables are not
+available (no `window.visualViewport`). The variables are written by
+`useVisualViewportMetrics()` in `src/lib/viewport.ts`. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(15, 23, 42, 0.5);
+  top: var(--app-vp-top, 0px);
+  bottom: auto;
+  height: 100vh;
+  height: var(--app-vvh, 100dvh);
+  overscroll-behavior: contain;
+}
+
+/* Confirmation dialogs must always sit above every normal modal. */
+.modal-overlay-top {
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.modal-overlay-top > .modal-sheet {
+  pointer-events: auto;
+}
+
+@keyframes skeleton-pulse {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    background: var(--background);
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--foreground);
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+    min-height: 44px;
+    min-width: 44px;
+    white-space: nowrap;
+  }
+
+  .btn:hover {
+    background: var(--background-subtle);
+  }
+
+  .btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--teal);
+    border-color: var(--teal);
+    color: var(--teal-foreground);
+    font-weight: 600;
+  }
+
+  .btn-primary:hover {
+    background: var(--teal-strong);
+    border-color: var(--teal-strong);
+    color: var(--teal-foreground);
+  }
+
+  .btn-secondary {
+    background: var(--background);
+    border-color: var(--border-strong);
+    color: var(--foreground);
+    font-weight: 600;
+  }
+
+  .btn-secondary:hover {
+    background: var(--background-subtle);
+    border-color: var(--teal);
+    color: var(--teal-strong);
+  }
+
+  .btn-danger {
+    border-color: var(--danger-border);
+    color: var(--danger);
+    background: var(--background);
+  }
+
+  .btn-danger:hover {
+    background: var(--danger-subtle);
+    border-color: #fbc4c4;
+    color: var(--danger-hover);
+  }
+
+  .btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    min-height: 38px;
+    min-width: 38px;
+  }
+
+  .btn-block {
+    width: 100%;
+  }
+
+  /* Square action button for frequently used row/card actions. */
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border);
+    background: var(--background);
+    color: var(--foreground);
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .icon-btn:hover {
+    background: var(--background-subtle);
+  }
+
+  .icon-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .icon-btn-teal {
+    color: var(--teal-strong);
+    border-color: #99f6e4;
+    background: var(--teal-subtle);
+  }
+
+  .icon-btn-teal:hover {
+    background: #d5f5ee;
+    border-color: var(--teal);
+  }
+
+  .icon-btn-primary {
+    background: var(--teal);
+    border-color: var(--teal);
+    color: var(--teal-foreground);
+  }
+
+  .icon-btn-primary:hover {
+    background: var(--teal-strong);
+    border-color: var(--teal-strong);
+  }
+
+  .icon-btn-danger {
+    color: var(--danger);
+    border-color: var(--danger-border);
+    background: var(--background);
+  }
+
+  .icon-btn-danger:hover {
+    background: var(--danger-subtle);
+    border-color: #fbc4c4;
+  }
+
+  .icon-btn-warn {
+    color: var(--warning);
+    border-color: #fde68a;
+    background: var(--warning-subtle);
+  }
+
+  .icon-btn-warn:hover {
+    background: #fde68a;
+    border-color: #f59e0b;
+  }
+
+  .input {
+    display: block;
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border-strong);
+    background: var(--background);
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    color: var(--foreground);
+    min-height: 48px;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  .input::placeholder {
+    color: var(--foreground-muted);
+  }
+
+  .input:focus {
+    outline: none;
+    border-color: var(--teal);
+    box-shadow: 0 0 0 4px var(--teal-ring);
+  }
+
+  .input:disabled {
+    background: var(--surface-muted);
+    color: var(--foreground-muted);
+    cursor: not-allowed;
+  }
+
+  .label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--foreground);
+    margin-bottom: 0.375rem;
+  }
+
+  .field-error {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--danger);
+    margin-top: 0.375rem;
+  }
+
+  .field-hint {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--foreground-muted);
+    margin-top: 0.375rem;
+  }
+
+  .card {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .card-muted {
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+  }
+
+  .modal-sheet {
+    background: var(--background);
+    /* Default shape for centered dialogs. Split dialogs (fixed header +
+       scrolling content + fixed footer) may override the rounding with
+       utilities; they mark their scroll area with `data-modal-scroll` so the
+       keyboard hook in `src/lib/viewport.ts` scrolls only that content. */
+    border-radius: 1rem;
+    box-shadow: var(--shadow-md);
+    /* 80vh is the fallback for browsers without dvh or the visual-viewport
+       variable; the second declaration keeps the sheet inside the area that
+       is actually visible while the on-screen keyboard is open. */
+    max-height: 80vh;
+    max-height: min(85dvh, calc(var(--app-vvh, 100dvh) * 0.85));
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    overscroll-behavior-y: contain;
+  }
+
+  /* Content-sized dialogs (Edit House / Add House). The sheet hugs its
+     content — no `h-full`, no `min-h-screen` — and its height is capped only
+     when the content does not fit:
+
+     - mobile: visible viewport height minus a 1rem gap (the overlay already
+       has `p-4`), so the dialog never becomes a full-screen page;
+     - desktop (`sm`): the same cap, limited to 90vh.
+
+     The cap uses `--app-vvh` (the *visible* viewport from
+     `src/lib/viewport.ts`) rather than a raw `100dvh` on purpose: when the
+     keyboard is already open, a `100dvh` cap would be taller than the visible
+     area, so the header and footer of the dialog would end up behind the
+     keyboard. With `--app-vvh` the whole dialog always fits in the visible
+     area and only the `[data-modal-scroll]` content scrolls. */
+  .modal-sheet-fit {
+    max-height: calc(100vh - 2rem);
+    max-height: calc(var(--app-vvh, 100dvh) - 2rem);
+  }
+
+  @media (min-width: 640px) {
+    .modal-sheet-fit {
+      max-height: min(90vh, calc(var(--app-vvh, 100dvh) - 2rem));
+    }
+  }
+
+  /* Momentum scrolling for the dialog's single scroll area (no-op where the
+     property is not supported). */
+  .modal-sheet [data-modal-scroll] {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Stable dialog positioning: while a dialog is open, the page body should
+     not scroll beneath the modal (background locked), and the dialog itself
+     must keep its open-time position instead of being pushed below the
+     keyboard. `useModalKeyboardBehavior` in `src/lib/viewport.ts` reuses the
+     existing `.modal-overlay` visual-viewport geometry (it is already sized
+     from `--app-vp-top` / `--app-vvh`) and scrolls only the dialog's own
+     content to keep the focused field visible. Nothing here recenters the
+     dialog, and the page behind is locked with plain `overflow: hidden` (no
+     fixed positioning of `.page-shell`, which would create a second scroll
+     container and reset the page scroll position). */
+  body.nav-dialog-open {
+    overflow: hidden;
+  }
+
+  /* Save/cancel footer. It is never position: sticky and never overlays the
+     content: in a split dialog it is a `shrink-0` flex child after the
+     scrolling content, so it stays visible while only the content scrolls;
+     in a single-scroll dialog it simply follows the form content.
+     Keyboard handling is separate and lives in `--app-vvh` / the viewport
+     hook, not here. */
+  .modal-foot {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Floating tools button of the navigation page. Base offset is unchanged
+     (5rem) but it now clears the home-indicator safe area and any open
+     on-screen keyboard (`--app-kb-inset` from `src/lib/viewport.ts`), so the
+     main navigation action is never buried under the bottom bar or the
+     keyboard. */
+  .nav-fab {
+    position: fixed;
+    right: 1rem;
+    z-index: 50;
+    bottom: calc(5rem + env(safe-area-inset-bottom, 0px) + var(--app-kb-inset, 0px));
+  }
+
+  @media (min-width: 768px) {
+    .nav-fab {
+      bottom: calc(5rem + var(--app-kb-inset, 0px));
+    }
+  }
+
+  /* Vertical, icon-only action rail on the side of a navigation card. */
+  .action-rail {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.625rem;
+    width: 60px;
+    padding: 0.75rem 0.5rem;
+    background: var(--surface-muted);
+  }
+
+  .page-shell {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.625rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .badge-teal {
+    background: var(--teal-subtle);
+    color: #0f766e;
+  }
+
+  .badge-slate {
+    background: #f1f5f9;
+    color: #475569;
+  }
+
+  .badge-success {
+    background: var(--success-subtle);
+    color: var(--success);
+  }
+
+  .badge-amber {
+    background: var(--warning-subtle);
+    color: var(--warning);
+  }
+
+  .badge-danger {
+    background: var(--danger-subtle);
+    color: var(--danger-hover);
+  }
+
+  .page-title {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--foreground);
+  }
+
+  .section-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--foreground-muted);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 3rem 1rem;
+    text-align: center;
+    color: var(--foreground-muted);
+  }
+
+  .error-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 2.5rem 1rem;
+    text-align: center;
+    border: 1px solid var(--danger-border);
+    background: var(--danger-subtle);
+    border-radius: 1rem;
+    color: var(--danger-hover);
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, #eef2f6 25%, #e2e8f0 37%, #eef2f6 63%);
+    background-size: 400% 100%;
+    animation: skeleton-pulse 1.4s ease infinite;
+    border-radius: 0.5rem;
+  }
+}
