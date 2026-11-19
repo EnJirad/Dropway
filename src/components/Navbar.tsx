@@ -7,12 +7,13 @@ import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { User } from "@supabase/supabase-js";
 import type { LucideIcon } from "lucide-react";
-import { Menu, X, LogOut, Warehouse, MapPinned } from "lucide-react";
+import { Menu, X, LogOut, Warehouse, MapPinned, ScanLine } from "lucide-react";
 
 // Single source of truth for the in-app navigation destinations on mobile.
 const MOBILE_TABS: ReadonlyArray<{ href: string; label: string; Icon: LucideIcon }> = [
   { href: "/houses", label: "คลังหลัก", Icon: Warehouse },
   { href: "/navigation", label: "นำทาง", Icon: MapPinned },
+  { href: "/scan", label: "สแกน", Icon: ScanLine },
 ];
 
 function mobileTabClass(active: boolean) {
@@ -125,6 +126,7 @@ export default function Navbar() {
   const sectionLabel = (() => {
     if (pathname === "/houses") return "คลังบ้าน";
     if (pathname === "/navigation") return "นำทาง";
+    if (pathname === "/scan") return "สแกน QR";
     if (pathname === "/login") return "เข้าสู่ระบบ";
     if (pathname === "/register") return "สมัครสมาชิก";
     return "DropWay";
@@ -157,7 +159,7 @@ export default function Navbar() {
           className="mobile-bottom-nav md:hidden"
         >
           <div className="mobile-nav-inner mx-auto flex max-w-sm items-center justify-around px-4">
-            {[0, 1, 2].map((key) => (
+            {[0, 1, 2, 3].map((key) => (
               <div key={key} className="flex flex-col items-center gap-1.5">
                 <div className="h-8 w-12 animate-pulse rounded-lg bg-gray-100" />
                 <div className="h-3 w-10 animate-pulse rounded bg-gray-100" />
@@ -203,6 +205,17 @@ export default function Navbar() {
                 }`}
               >
                 การนำทาง
+              </Link>
+              <Link
+                href="/scan"
+                aria-current={isActive("/scan") ? "page" : undefined}
+                className={`text-base font-medium transition-colors ${
+                  isActive("/scan")
+                    ? "text-teal-700"
+                    : "text-gray-500 hover:text-teal-700"
+                }`}
+              >
+                สแกน QR
               </Link>
             </>
           )}

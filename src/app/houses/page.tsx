@@ -21,10 +21,13 @@ import {
   ChevronRight,
   Copy,
   Phone,
+  Upload,
+  QrCode,
 } from "lucide-react";
 import Papa from "papaparse";
 import { toast } from "react-hot-toast";
 import { useModalKeyboardBehavior } from "@/lib/viewport";
+import Link from "next/link";
 
 const ITEMS_PER_PAGE = 20;
 
@@ -201,6 +204,114 @@ function sortByRelevance(
     .map((entry) => entry.house);
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type CsvRecord = Record<string, string | undefined>;
+
+/**
+ * ชื่อคอลัมน์ที่รับได้ตอนอัพโหลด CSV — รองรับไฟล์ที่ดาวน์โหลดจากแอป
+ * (id, full_name, phone, ...) และไฟล์ที่ผู้ใช้แก้เองด้วยหัวตารางภาษาไทย
+ */
+const CSV_FIELDS: Record<string, string[]> = {
+  id: ["id", "uuid", "house_id", "houseid", "รหัส", "รหัสบ้าน"],
+  full_name: ["full_name", "fullname", "name", "ชื่อ", "ชื่อ-นามสกุล", "ชื่อลูกค้า"],
+  phone: ["phone", "tel", "telephone", "mobile", "เบอร์", "เบอร์โทร", "โทรศัพท์"],
+  address: ["address", "ที่อยู่"],
+  lat: ["lat", "latitude", "ละติจูด"],
+  lng: ["lng", "lon", "long", "longitude", "ลองจิจูด"],
+  note: ["note", "notes", "หมายเหตุ"],
+  quantity: ["quantity", "qty", "จำนวน"],
+  created_at: ["created_at", "createdat", "วันที่สร้าง"],
+  updated_at: ["updated_at", "updatedat", "วันที่แก้ไข"],
+};
+
+function readCsvField(row: CsvRecord, keys: string[]): string | null {
+  const normalized = new Map<string, string>();
+  Object.entries(row).forEach(([key, value]) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (trimmed) {
+      normalized.set(key.replace(/^\uFEFF/, "").trim().toLowerCase(), trimmed);
+    }
+  });
+  for (const key of keys) {
+    const value = normalized.get(key.toLowerCase());
+    if (value) return value;
+  }
+  return null;
+}
+
+function generateUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = (Math.random() * 16) | 0;
+    const value = char === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function parseCsvNumber(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseCsvDate(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? undefined : new Date(time).toISOString();
+}
+
+type HouseImportRow = {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  note: string | null;
+  quantity?: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+/**
+ * แปลง 1 แถวของ CSV เป็นข้อมูลบ้าน
+ * - id ที่เป็น UUID ใช้เทียบกับฐานข้อมูลเพื่อข้ามรายการซ้ำ
+ * - id ที่หายไป/ไม่ใช่ UUID จะสร้าง UUID ใหม่ (ถือเป็นบ้านใหม่)
+ * - แถวที่ไม่มีข้อมูลบ้านเลยจะถูกข้าม
+ */
+function csvRecordToHouse(row: CsvRecord): HouseImportRow | null {
+  const rawId = readCsvField(row, CSV_FIELDS.id);
+  const fullName = readCsvField(row, CSV_FIELDS.full_name);
+  const phone = readCsvField(row, CSV_FIELDS.phone);
+  const address = readCsvField(row, CSV_FIELDS.address);
+  const note = readCsvField(row, CSV_FIELDS.note);
+  const rawQuantity = readCsvField(row, CSV_FIELDS.quantity);
+
+  if (!fullName && !phone && !address && !note) return null;
+
+  const quantity = rawQuantity ? Number(rawQuantity) : null;
+
+  return {
+    id: rawId && UUID_PATTERN.test(rawId) ? rawId.toLowerCase() : generateUuid(),
+    full_name: fullName,
+    phone,
+    address,
+    lat: parseCsvNumber(readCsvField(row, CSV_FIELDS.lat)),
+    lng: parseCsvNumber(readCsvField(row, CSV_FIELDS.lng)),
+    note,
+    ...(quantity !== null && Number.isFinite(quantity)
+      ? { quantity: Math.max(0, Math.round(quantity)) }
+      : {}),
+    created_at: parseCsvDate(readCsvField(row, CSV_FIELDS.created_at)),
+    updated_at: parseCsvDate(readCsvField(row, CSV_FIELDS.updated_at)),
+  };
+}
+
 export default function HousesPage() {
   const [houses, setHouses] = useState<House[]>([]);
   const [filteredHouses, setFilteredHouses] = useState<House[]>([]);
@@ -243,9 +354,12 @@ export default function HousesPage() {
   const [formData, setFormData] = useState<Partial<House>>({});
   const [isDetecting, setIsDetecting] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [importingCsv, setImportingCsv] = useState(false);
+  const [importProgress, setImportProgress] = useState<string | null>(null);
   const [isSavingHouse, setIsSavingHouse] = useState(false);
   const router = useRouter();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
   const [coordsInput, setCoordsInput] = useState<string>("");
 
   const [hasShownVillageSuggestions, setHasShownVillageSuggestions] =
@@ -570,6 +684,12 @@ export default function HousesPage() {
   useEffect(() => {
     loadHouses();
   }, [loadHouses]);
+
+  // เปิดจากหน้าสแกน QR ด้วย /houses?search=<ชื่อบ้าน>
+  useEffect(() => {
+    const term = new URLSearchParams(window.location.search).get("search");
+    if (term) setSearchTerm(term);
+  }, []);
 
   // หากโหลดครั้งแรกแล้วล้มเหลว ให้แสดงปุ่มลองใหม่ ไม่ใช่แค่หน้าว่าง
   const retryInitialLoad = () => {
@@ -1091,11 +1211,137 @@ export default function HousesPage() {
     }
   };
 
+  /**
+   * อัพโหลด CSV: เพิ่มเฉพาะบ้านที่ id (UUID) ยังไม่มีในฐานข้อมูล
+   * - เทียบกับฐานข้อมูลเป็นชุด ๆ ละ 100 id
+   * - แถวที่ id ซ้ำ (ทั้งในไฟล์และในฐานข้อมูล) จะถูกข้าม
+   * - ถ้าแถวใดแถวหนึ่งผิดพลาด จะลองทีละแถวเพื่อไม่ให้ข้อมูลชุดนั้นหายทั้งหมด
+   */
+  const importHousesCsv = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      toast.error("กรุณาเลือกไฟล์นามสกุล .csv");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("ไฟล์ใหญ่เกิน 10 MB");
+      return;
+    }
+
+    setImportingCsv(true);
+    setImportProgress("กำลังอ่านไฟล์...");
+    try {
+      const parsed = await new Promise<Papa.ParseResult<CsvRecord>>(
+        (resolve, reject) => {
+          Papa.parse<CsvRecord>(file, {
+            header: true,
+            skipEmptyLines: "greedy",
+            transformHeader: (header) => header.replace(/^\uFEFF/, "").trim(),
+            complete: resolve,
+            error: reject,
+          });
+        },
+      );
+
+      const rows: HouseImportRow[] = [];
+      const seenInFile = new Set<string>();
+      let invalid = 0;
+      let duplicatedInFile = 0;
+
+      for (const record of parsed.data ?? []) {
+        const row = csvRecordToHouse(record);
+        if (!row) {
+          invalid += 1;
+          continue;
+        }
+        if (seenInFile.has(row.id)) {
+          duplicatedInFile += 1;
+          continue;
+        }
+        seenInFile.add(row.id);
+        rows.push(row);
+      }
+
+      if (rows.length === 0) {
+        toast.error("ไม่พบข้อมูลที่นำเข้าได้ในไฟล์นี้");
+        return;
+      }
+
+      // ตรวจ id ที่มีอยู่แล้วในฐานข้อมูล
+      const existingIds = new Set<string>();
+      const ids = rows.map((row) => row.id);
+      for (let start = 0; start < ids.length; start += 100) {
+        const chunk = ids.slice(start, start + 100);
+        setImportProgress(
+          `กำลังตรวจรหัสซ้ำ ${Math.min(start + chunk.length, ids.length)}/${ids.length}...`,
+        );
+        const { data, error } = await supabase
+          .from("houses")
+          .select("id")
+          .in("id", chunk);
+        if (error) throw error;
+        data?.forEach((item: { id: string }) =>
+          existingIds.add(item.id.toLowerCase()),
+        );
+      }
+
+      const newRows = rows.filter((row) => !existingIds.has(row.id));
+      const duplicates = rows.length - newRows.length + duplicatedInFile;
+
+      if (newRows.length === 0) {
+        toast.success(
+          `ไม่มีข้อมูลใหม่ — ข้ามรายการซ้ำ ${duplicates} รายการ`,
+        );
+        return;
+      }
+
+      let inserted = 0;
+      for (let start = 0; start < newRows.length; start += 500) {
+        const batch = newRows.slice(start, start + 500);
+        setImportProgress(
+          `กำลังนำเข้า ${Math.min(start, newRows.length)}/${newRows.length}...`,
+        );
+        const { error } = await supabase.from("houses").insert(batch);
+        if (!error) {
+          inserted += batch.length;
+          continue;
+        }
+
+        // มีแถวใดแถวหนึ่งผิดพลาด: ลองทีละแถวเพื่อเก็บแถวที่ถูกต้องไว้
+        for (const row of batch) {
+          const { error: rowError } = await supabase.from("houses").insert(row);
+          if (!rowError) {
+            inserted += 1;
+          } else {
+            console.error("CSV import failed", row.id, rowError);
+          }
+        }
+        toast.error(`บางรายการนำเข้าไม่สำเร็จ: ${error.message}`);
+      }
+
+      await loadHouses();
+      const skipped = duplicates + invalid;
+      toast.success(
+        `เพิ่ม ${inserted} รายการ${
+          skipped > 0 ? ` • ข้าม ${skipped} รายการ (ซ้ำ/ไม่ถูกต้อง)` : ""
+        }`,
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(
+        "อัพโหลด CSV ไม่สำเร็จ: " +
+          (error instanceof Error ? error.message : "กรุณาลองอีกครั้ง"),
+      );
+    } finally {
+      setImportingCsv(false);
+      setImportProgress(null);
+    }
+  };
+
   const downloadAllHousesCsv = async () => {
     setDownloading(true);
     const { data, error } = await supabase
       .from("houses")
-      .select("id,full_name,phone,address,lat,lng,note,created_at,updated_at")
+      .select("id,full_name,phone,address,lat,lng,note,quantity,created_at,updated_at")
       .order("created_at", { ascending: false });
     if (error) {
       toast.error("ดาวน์โหลดไม่สำเร็จ: " + error.message);
@@ -1177,7 +1423,35 @@ export default function HousesPage() {
             {getCountText()}
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-2">
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              // เคลียร์ค่า input เพื่อให้เลือกไฟล์เดิมซ้ำได้
+              event.target.value = "";
+              if (file) void importHousesCsv(file);
+            }}
+          />
+          <Link
+            href="/scan"
+            className="btn btn-secondary flex-1 sm:flex-none"
+          >
+            <QrCode className="h-4 w-4" aria-hidden="true" />
+            สแกน QR
+          </Link>
+          <button
+            type="button"
+            onClick={() => csvInputRef.current?.click()}
+            disabled={importingCsv}
+            className="btn btn-secondary flex-1 sm:flex-none"
+          >
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            {importingCsv ? "กำลังอัพโหลด..." : "อัพโหลด CSV"}
+          </button>
           <button
             type="button"
             onClick={downloadAllHousesCsv}
@@ -1196,6 +1470,14 @@ export default function HousesPage() {
             เพิ่มบ้าน
           </button>
         </div>
+        {importingCsv && importProgress && (
+          <p
+            aria-live="polite"
+            className="text-xs font-medium text-gray-600 sm:text-right"
+          >
+            {importProgress}
+          </p>
+        )}
       </div>
 
       {/* ช่องค้นหา + ปุ่ม X ล้างคำค้นหา + ปุ่มกรอง */}
