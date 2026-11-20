@@ -39,11 +39,11 @@ import {
 
 const SCANNER_REGION_ID = "qr-scan-region";
 /** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง */
-const AUTO_HOLD_MS = 700;
+const AUTO_HOLD_MS = 1200;
 /** ตรวจจับนิ่งต่อเนื่องกี่ ms พร้อมกับ hold */
-const AUTO_STILL_MS = 380;
+const AUTO_STILL_MS = 600;
 /** ตรวจเฟรมทุกกี่ ms */
-const AUTO_TICK_MS = 260;
+const AUTO_TICK_MS = 300;
 /** หลังเพิ่มสำเร็จ เว้นช่วงก่อนสแกนชิ้นถัดไป กันสแกนซ้ำใบเดิม */
 const AUTO_COOLDOWN_MS = 2600;
 const UUID_PATTERN =
@@ -497,9 +497,9 @@ export default function ScanPage() {
       const frame = analyzeCanvas(canvas);
       if (!frame) return;
 
-      // ความนิ่งแบบผ่อนปรน: มือสั่นเล็กน้อยยังนับว่านิ่ง
+      // ความนิ่ง: ต้องนิ่งพอให้ภาพไม่เบลอ (ภาพเบลอทำให้ OCR แม่นน้อยลง)
       const diff = prevGray ? frameDifference(prevGray, frame.gray) : 999;
-      const moving = diff > 12;
+      const moving = diff > 9;
       const label = looksLikeLabel(frame);
       prevGray = frame.gray;
 
@@ -935,7 +935,7 @@ export default function ScanPage() {
               onClick={() => void toggleTorch()}
               aria-pressed={torchOn}
               aria-label={torchOn ? "ปิดแฟลช" : "เปิดแฟลช"}
-              className={`absolute left-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-full border shadow-md transition-colors ${
+              className={`absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-full border shadow-md transition-colors ${
                 torchOn
                   ? "border-amber-300 bg-amber-400 text-amber-950"
                   : "border-white/30 bg-black/45 text-white"

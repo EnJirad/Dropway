@@ -248,9 +248,13 @@ export async function recognizeLabel(file: File): Promise<OcrAttempt> {
 
       const best = passes.reduce((a, b) => (quality(b) > quality(a) ? b : a));
 
-      // ใบปะหน้าเอียง/ตะแคง: ถ้าอ่านตรง ๆ ยังไม่ดี ให้ลองหมุน 90/270/180 องศา
+      // ใบปะหน้าเอียง/ตะแคง: ลองหมุน 90/270/180 เฉพาะเมื่อผลตรง ๆ อ่อนจริง
+      // และยอมรับผลจากภาพหมุนก็ต่อเมื่อดีกว่าอย่างชัดเจน (กันเลือกผลผิดแนว)
       let chosen = best;
-      if (needsRetry(best)) {
+      const weakForRotation =
+        best.confidence < 62 || best.text.replace(/\s+/g, "").length < 15;
+      if (weakForRotation) {
+        const baseline = quality(best);
         for (const turns of [1, 3, 2]) {
           if (elapsed() > ROTATION_BUDGET_MS) break;
           const rotated = rotateCanvas(canvas, turns);
@@ -260,7 +264,9 @@ export async function recognizeLabel(file: File): Promise<OcrAttempt> {
             confidence: typeof res.data.confidence === "number" ? res.data.confidence : 0,
           };
           passes.push(pass);
-          if (quality(pass) > quality(chosen)) chosen = pass;
+          if (quality(pass) > baseline + 6 && quality(pass) > quality(chosen)) {
+            chosen = pass;
+          }
           // พอแล้วถ้าอ่านไทยได้ครบและมั่นใจสูง
           if (chosen.confidence >= 82 && thaiCharCount(chosen.text) >= 15) break;
         }

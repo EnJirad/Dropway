@@ -16,6 +16,8 @@ export type FrameAnalysis = {
   std: number;
   whiteRatio: number;
   edgeRatio: number;
+  /** ความคมชัด (ผลต่างขอบเฉลี่ย) — ภาพเบลอจะต่ำ */
+  sharpness: number;
 };
 
 /** ด้านยาวสุดของภาพที่ใช้วัด (เล็ก = เร็ว) */
@@ -29,7 +31,8 @@ export function looksLikeLabel(a: FrameAnalysis): boolean {
     a.whiteRatio > 0.14 &&
     a.whiteRatio < 0.92 &&
     a.edgeRatio > 0.02 &&
-    a.edgeRatio < 0.42
+    a.edgeRatio < 0.42 &&
+    a.sharpness > 6
   );
 }
 
@@ -76,14 +79,16 @@ export function analyzeCanvas(canvas: HTMLCanvasElement): FrameAnalysis | null {
   }
   const std = Math.sqrt(variance / total);
 
-  // ความหนาแน่นขอบ: ผลต่างกับพิกเซลข้าง ๆ เกินเกณฑ์
+  // ความหนาแน่นขอบ + ความคมชัด: ผลต่างกับพิกเซลข้าง ๆ เกินเกณฑ์
   let edges = 0;
   let compared = 0;
+  let gradientSum = 0;
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       const i = y * width + x;
       const gx = Math.abs(gray[i] - gray[i + 1]);
       const gy = Math.abs(gray[i] - gray[i + width]);
+      gradientSum += gx + gy;
       if (gx + gy > 40) edges += 1;
       compared += 1;
     }
@@ -95,5 +100,6 @@ export function analyzeCanvas(canvas: HTMLCanvasElement): FrameAnalysis | null {
     std,
     whiteRatio: white / total,
     edgeRatio: compared ? edges / compared : 0,
+    sharpness: compared ? gradientSum / compared : 0,
   };
 }
