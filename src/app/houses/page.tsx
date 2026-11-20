@@ -357,6 +357,9 @@ export default function HousesPage() {
   const [formData, setFormData] = useState<Partial<House>>({});
   const [isDetecting, setIsDetecting] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  // หน้าต่างเลือกอำเภอก่อนดาวน์โหลด CSV ("" = ทั้งหมด, "__none__" = ไม่ระบุอำเภอ)
+  const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [csvDistrict, setCsvDistrict] = useState("");
   const [importingCsv, setImportingCsv] = useState(false);
   const [importProgress, setImportProgress] = useState<string | null>(null);
   const [isSavingHouse, setIsSavingHouse] = useState(false);
@@ -1296,7 +1299,8 @@ export default function HousesPage() {
     }
   };
 
-  const downloadAllHousesCsv = async () => {
+  // district: "" = ทั้งหมด, "__none__" = บ้านที่ที่อยู่ไม่ระบุอำเภอ, อื่นๆ = ชื่ออำเภอ
+  const downloadHousesCsv = async (district: string) => {
     setDownloading(true);
     try {
       const res = await fetch("/api/houses");
@@ -1304,7 +1308,15 @@ export default function HousesPage() {
       if (!res.ok || !Array.isArray(json.data)) {
         throw new Error(json.error || "ไม่สามารถดึงข้อมูลได้");
       }
-      const data = json.data;
+      const data: House[] = (json.data as House[]).filter((h) => {
+        if (!district) return true;
+        const d = extractDistrict(h.address);
+        return district === "__none__" ? d === null : d === district;
+      });
+      if (data.length === 0) {
+        toast.error("ไม่มีบ้านในอำเภอที่เลือก");
+        return;
+      }
       const csv = Papa.unparse(data);
       const blob = new Blob(["\uFEFF" + csv], {
         type: "text/csv;charset=utf-8;",
@@ -1313,12 +1325,14 @@ export default function HousesPage() {
       const link = document.createElement("a");
       link.href = url;
       const dateStr = new Date().toISOString().slice(0, 10);
-      link.download = `คลังบ้าน_ทั้งหมด_${dateStr}.csv`;
+      const label = !district ? "ทั้งหมด" : district === "__none__" ? "ไม่ระบุอำเภอ" : `อ.${district}`;
+      link.download = `คลังบ้าน_${label}_${dateStr}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      toast.success("ดาวน์โหลด CSV สำเร็จ!");
+      toast.success(`ดาวน์โหลด CSV สำเร็จ! (${data.length} รายการ)`);
+      setCsvModalOpen(false);
     } catch (error) {
       toast.error("ดาวน์โหลดไม่สำเร็จ: " + (error instanceof Error ? error.message : ""));
     } finally {
@@ -1407,7 +1421,10 @@ export default function HousesPage() {
           </button>
           <button
             type="button"
-            onClick={downloadAllHousesCsv}
+            onClick={() => {
+              setCsvDistrict("");
+              setCsvModalOpen(true);
+            }}
             disabled={downloading}
             className="btn btn-secondary flex-1 sm:flex-none"
           >
@@ -1529,6 +1546,89 @@ export default function HousesPage() {
           </select>
         </div>
       </div>
+      {/* เลือกอำเภอก่อนดาวน์โหลด CSV */}
+      {csvModalOpen &&
+        (() => {
+          const counts = new Map<string, number>();
+          let noDistrict = 0;
+          for (const h of houses) {
+            const d = extractDistrict(h.address);
+            if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
+            else noDistrict += 1;
+          }
+          const options: { value: string; label: string; count: number }[] = [
+            { value: "", label: "ทั้งหมด (ทุกอำเภอ)", count: houses.length },
+            ...Array.from(counts.entries())
+              .sort((a, b) => a[0].localeCompare(b[0], "th"))
+              .map(([name, count]) => ({ value: name, label: `อ.${name}`, count })),
+          ];
+          if (noDistrict > 0) {
+            options.push({ value: "__none__", label: "ไม่ระบุอำเภอ", count: noDistrict });
+          }
+          return (
+            <div
+              className="modal-overlay flex items-center justify-center p-4"
+              onClick={() => {
+                if (!downloading) setCsvModalOpen(false);
+              }}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="csv-modal-title"
+                className="modal-sheet w-full max-w-sm p-5 sm:rounded-2xl sm:p-6"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h2 id="csv-modal-title" className="text-lg font-bold text-gray-900">
+                  ดาวน์โหลด CSV
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">เลือกอำเภอที่ต้องการดาวน์โหลด</p>
+                <div className="mt-4 max-h-[50vh] space-y-2 overflow-y-auto" data-modal-scroll>
+                  {options.map((opt) => (
+                    <label
+                      key={opt.value || "all"}
+                      className={`flex min-h-[44px] cursor-pointer items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm ${
+                        csvDistrict === opt.value
+                          ? "border-blue-600 bg-blue-50 font-semibold"
+                          : "border-gray-200"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="csv-district"
+                          checked={csvDistrict === opt.value}
+                          onChange={() => setCsvDistrict(opt.value)}
+                        />
+                        {opt.label}
+                      </span>
+                      <span className="text-xs text-gray-500">{opt.count} หลัง</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-5 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCsvModalOpen(false)}
+                    disabled={downloading}
+                    className="btn btn-secondary flex-1"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void downloadHousesCsv(csvDistrict)}
+                    disabled={downloading}
+                    className="btn btn-primary flex-1"
+                  >
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    {downloading ? "กำลังโหลด..." : "ดาวน์โหลด"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       {/* รายการบ้าน */}
       {currentHouses.length === 0 ? (
         loading ? (
