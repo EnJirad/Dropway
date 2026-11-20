@@ -1,25 +1,59 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Eye, EyeOff, ExternalLink, KeyRound, Save, Settings, Sparkles, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Gauge,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  Save,
+  ScanText,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { toast } from "react-hot-toast";
 import {
   DEFAULT_MODELS,
   IMAGE_SIDES,
   PROVIDERS,
   defaultSettings,
+  detectProvider,
   loadSettings,
   maskKey,
+  providerName,
   saveSettings,
   type AiProvider,
   type AppSettings,
   type ImageMaxSide,
 } from "@/lib/aiSettings";
+import { listProviderModels, type AiModelInfo } from "@/lib/aiModels";
+
+/** ชุดค่าความเร็ว: จำนวนครั้งที่ลองใหม่ + เวลารอต่อครั้ง (วินาที) */
+const SPEED_PRESETS = [
+  { id: "fast", label: "เร็วสุด", desc: "ลอง 1 ครั้ง · รอ 10 วิ", attempts: 1, timeout: 10 },
+  { id: "balanced", label: "สมดุล", desc: "ลอง 2 ครั้ง · รอ 15 วิ", attempts: 2, timeout: 15 },
+  { id: "thorough", label: "ละเอียด", desc: "ลอง 3 ครั้ง · รอ 30 วิ", attempts: 3, timeout: 30 },
+] as const;
+
+type ModelState = "idle" | "loading" | "ok" | "error";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [useCustomModel, setUseCustomModel] = useState(false);
+
+  const [models, setModels] = useState<AiModelInfo[]>([]);
+  const [modelState, setModelState] = useState<ModelState>("idle");
+  const [modelError, setModelError] = useState("");
+  const requestRef = useRef(0);
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -29,19 +63,86 @@ export default function SettingsPage() {
   const info = PROVIDERS.find((p) => p.id === settings.provider) ?? PROVIDERS[0];
   const key = settings.apiKeys[settings.provider];
   const model = settings.models[settings.provider];
+  const detected = detectProvider(key);
 
   const patch = (next: Partial<AppSettings>) => setSettings((s) => ({ ...s, ...next }));
 
-  const setKey = (value: string) =>
-    setSettings((s) => ({ ...s, apiKeys: { ...s.apiKeys, [s.provider]: value } }));
+  const setKeyFor = (provider: AiProvider, value: string) =>
+    setSettings((s) => ({ ...s, apiKeys: { ...s.apiKeys, [provider]: value } }));
 
-  const setModel = (value: string) =>
-    setSettings((s) => ({ ...s, models: { ...s.models, [s.provider]: value } }));
+  const setModelFor = (provider: AiProvider, value: string) =>
+    setSettings((s) => ({ ...s, models: { ...s.models, [provider]: value } }));
 
   const selectProvider = (id: AiProvider) => {
     setShowKey(false);
+    setUseCustomModel(false);
     patch({ provider: id });
   };
+
+  /** วาง key แล้วเดาเจ้าของให้เอง แล้วสลับไปเจ้านั้นทันที */
+  const onKeyChange = (value: string) => {
+    const target = detectProvider(value);
+    if (target && target !== settings.provider) {
+      setUseCustomModel(false);
+      setShowKey(false);
+      setSettings((s) => ({
+        ...s,
+        provider: target,
+        apiKeys: { ...s.apiKeys, [target]: value },
+      }));
+      toast.success(`ตรวจพบ key ของ ${providerName(target)}`);
+      return;
+    }
+    setKeyFor(settings.provider, value);
+  };
+
+  const loadModels = useCallback(
+    async (force: boolean) => {
+      const currentKey = settings.apiKeys[settings.provider].trim();
+      if (!currentKey) return;
+      const requestId = requestRef.current + 1;
+      requestRef.current = requestId;
+      setModelState("loading");
+      setModelError("");
+      const result = await listProviderModels(settings.provider, currentKey, { force });
+      if (requestId !== requestRef.current) return;
+      if (result.ok) {
+        setModels(result.models);
+        setModelState("ok");
+      } else {
+        setModels([]);
+        setModelState("error");
+        setModelError(result.message);
+      }
+    },
+    [settings.provider, settings.apiKeys],
+  );
+
+  // ตรวจรายการโมเดลจริงหลังผู้ใช้หยุดพิมพ์ key (debounce)
+  useEffect(() => {
+    if (!loaded) return;
+    const currentKey = settings.apiKeys[settings.provider].trim();
+    if (!currentKey) {
+      requestRef.current += 1;
+      setModels([]);
+      setModelState("idle");
+      setModelError("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      void loadModels(false);
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [loaded, loadModels, settings.apiKeys, settings.provider]);
+
+  const modelInList = useMemo(() => models.some((m) => m.id === model), [models, model]);
+  const visionCount = useMemo(() => models.filter((m) => m.vision).length, [models]);
+  const speedPreset = useMemo(() => {
+    const found = SPEED_PRESETS.find(
+      (p) => p.attempts === settings.aiMaxAttempts && p.timeout === settings.aiTimeoutSec,
+    );
+    return found ? found.id : "";
+  }, [settings.aiMaxAttempts, settings.aiTimeoutSec]);
 
   const save = () => {
     if (settings.scanMode === "ai" && !key.trim()) {
@@ -51,7 +152,10 @@ export default function SettingsPage() {
     const next: AppSettings = {
       ...settings,
       apiKeys: { ...settings.apiKeys, [settings.provider]: key.trim() },
-      models: { ...settings.models, [settings.provider]: model.trim() || DEFAULT_MODELS[settings.provider] },
+      models: {
+        ...settings.models,
+        [settings.provider]: model.trim() || DEFAULT_MODELS[settings.provider],
+      },
     };
     if (saveSettings(next)) {
       setSettings(next);
@@ -62,7 +166,10 @@ export default function SettingsPage() {
   };
 
   const clearKey = () => {
-    setKey("");
+    requestRef.current += 1;
+    setModels([]);
+    setModelState("idle");
+    setKeyFor(settings.provider, "");
     toast.success("ล้าง key แล้ว กดบันทึกเพื่อยืนยัน");
   };
 
@@ -74,147 +181,68 @@ export default function SettingsPage() {
           ตั้งค่า
         </h1>
         <p className="mt-2 text-sm font-medium text-gray-600">
-          เลือกวิธีอ่านฉลากพัสดุ และใส่ API key ของ AI ที่ต้องการใช้
+          แบ่งเป็น 2 ส่วน: OCR ในเครื่อง และ AI ที่ใช้อ่านรูป
         </p>
       </div>
 
-      <section className="card p-4 sm:p-5">
-        <h2 className="flex items-center gap-2 text-sm font-bold text-gray-900">
-          <Sparkles className="h-4 w-4 text-teal-700" aria-hidden="true" />
-          วิธีอ่านฉลาก
-        </h2>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="วิธีอ่านฉลาก">
-          {(
-            [
-              { id: "ocr", title: "OCR ในเครื่อง", desc: "ฟรี ไม่ต้องใช้ key แต่ภาษาไทยอาจอ่านผิดบ้าง" },
-              { id: "ai", title: "ใช้ AI อ่านรูป", desc: "แม่นกว่า แยกชื่อ บ้านเลขที่ ที่อยู่ให้ ต้องมี API key" },
-            ] as const
-          ).map((m) => {
-            const active = settings.scanMode === m.id;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => patch({ scanMode: m.id })}
-                className={`rounded-xl border p-3 text-left text-sm transition-colors ${
-                  active ? "border-teal-600 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
-                }`}
-              >
-                <span className="block font-bold text-gray-900">{m.title}</span>
-                <span className="mt-1 block text-xs text-gray-600">{m.desc}</span>
-              </button>
-            );
-          })}
+      {/* ================= OCR ================= */}
+      <section className="card p-4 sm:p-5" aria-labelledby="ocr-group-title">
+        <div className="flex items-start justify-between gap-3">
+          <h2
+            id="ocr-group-title"
+            className="flex items-center gap-2 text-sm font-bold text-gray-900"
+          >
+            <ScanText className="h-4 w-4 text-teal-700" aria-hidden="true" />
+            OCR ในเครื่อง
+          </h2>
+          <span
+            className={`badge ${
+              settings.scanMode === "ocr" ? "badge-teal" : settings.fallbackToOcr ? "badge-slate" : "badge-amber"
+            }`}
+          >
+            {settings.scanMode === "ocr"
+              ? "ใช้เป็นตัวหลัก"
+              : settings.fallbackToOcr
+                ? "ใช้เป็นตัวสำรอง"
+                : "ปิดอยู่"}
+          </span>
         </div>
-      </section>
-
-      <section className="card mt-4 p-4 sm:p-5">
-        <h2 className="flex items-center gap-2 text-sm font-bold text-gray-900">
-          <KeyRound className="h-4 w-4 text-teal-700" aria-hidden="true" />
-          ผู้ให้บริการ AI
-        </h2>
         <p className="mt-1 text-xs text-gray-500">
-          เลือกเจ้าที่ต้องการ กดลิงก์เพื่อสมัครและสร้าง API key ราคาและโควตาอาจเปลี่ยน ตรวจที่เว็บผู้ให้บริการ
+          อ่านข้อความจากรูปในเครื่อง ฟรี ไม่ต้องใช้ key — ใช้ CPU ของมือถือจึงช้ากว่า AI เล็กน้อย
         </p>
 
-        <ul className="mt-3 space-y-2">
-          {PROVIDERS.map((p) => {
-            const active = p.id === settings.provider;
-            const hasKey = settings.apiKeys[p.id].trim().length > 0;
-            return (
-              <li key={p.id}>
-                <div
-                  className={`rounded-xl border p-3 ${
-                    active ? "border-teal-600 bg-teal-50" : "border-gray-200"
+        <div className="mt-3 rounded-xl border border-gray-200 p-3">
+          <p className="text-sm font-medium text-gray-900">วิธีอ่านฉลาก</p>
+          <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup" aria-label="วิธีอ่านฉลาก">
+            {(
+              [
+                { id: "ocr", title: "OCR", desc: "ฟรี เร็ว ไม่ต้องใช้ key" },
+                { id: "ai", title: "AI", desc: "แม่นกว่า ต้องมี key" },
+              ] as const
+            ).map((mode) => {
+              const active = settings.scanMode === mode.id;
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => patch({ scanMode: mode.id })}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                    active
+                      ? "border-teal-600 bg-teal-50 font-bold text-teal-900"
+                      : "border-gray-200 text-gray-700 hover:bg-gray-50"
                   }`}
                 >
-                  <button
-                    type="button"
-                    onClick={() => selectProvider(p.id)}
-                    aria-pressed={active}
-                    className="w-full text-left"
-                  >
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-gray-900">{p.name}</span>
-                      {p.recommended && <span className="badge badge-teal">แนะนำ</span>}
-                      {hasKey && <span className="text-xs font-medium text-teal-700">มี key แล้ว</span>}
-                    </span>
-                    <span className="mt-1 block text-xs text-gray-700">{p.summary}</span>
-                    <span className="mt-1 block text-xs text-gray-500">{p.pricing}</span>
-                  </button>
-                  <a
-                    href={p.keyUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:underline"
-                  >
-                    สมัคร / สร้าง API key ที่ {p.maker}
-                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                  </a>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-
-        <div className="mt-4 space-y-3">
-          <label className="block text-xs font-medium text-gray-600">
-            API key ของ {info.name}
-            <div className="mt-1 flex gap-2">
-              <input
-                type={showKey ? "text" : "password"}
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                placeholder={info.keyPrefix}
-                autoComplete="off"
-                spellCheck={false}
-                className="input min-w-0 flex-1 font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? "ซ่อน key" : "แสดง key"}
-                className="btn btn-secondary"
-              >
-                {showKey ? (
-                  <EyeOff className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Eye className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
-            </div>
-            {loaded && key && !showKey && (
-              <span className="mt-1 block text-xs text-gray-500">บันทึกไว้: {maskKey(key)}</span>
-            )}
-          </label>
-
-          <label className="block text-xs font-medium text-gray-600">
-            โมเดล
-            <input
-              type="text"
-              list="ai-model-options"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              className="input mt-1 w-full font-mono"
-            />
-            <datalist id="ai-model-options">
-              {info.models.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-            <span className="mt-1 block text-xs text-gray-500">
-              เลือกจากรายการหรือพิมพ์ชื่อโมเดลที่ผู้ให้บริการเปิดให้ใช้
-            </span>
-          </label>
+                  <span className="block">{mode.title}</span>
+                  <span className="mt-0.5 block text-[11px] font-normal text-gray-500">
+                    {mode.desc}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </section>
-
-      <section className="card mt-4 p-4 sm:p-5">
-        <h2 className="text-sm font-bold text-gray-900">ตัวเลือกอื่น ๆ</h2>
 
         <label className="mt-3 flex items-start gap-3 text-sm">
           <input
@@ -226,11 +254,217 @@ export default function SettingsPage() {
           <span>
             <span className="block font-medium text-gray-900">ใช้ OCR สำรองเมื่อ AI ใช้ไม่ได้</span>
             <span className="block text-xs text-gray-500">
-              กรณี key ผิด เครดิตหมด หรือเน็ตมีปัญหา ระบบจะอ่านด้วย OCR ในเครื่องต่อ
+              key ผิด เครดิตหมด หรือเน็ตมีปัญหา — ระบบจะอ่านด้วย OCR ต่อทันที
             </span>
           </span>
         </label>
 
+        <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+          ระบบเก็บ worker ของ OCR ไว้ใช้ซ้ำและอุ่นไว้ตั้งแต่เปิดหน้า จึงสแกนครั้งต่อไปได้เร็วขึ้น
+        </p>
+      </section>
+
+      {/* ================= AI ================= */}
+      <section className="card mt-4 p-4 sm:p-5" aria-labelledby="ai-group-title">
+        <div className="flex items-start justify-between gap-3">
+          <h2
+            id="ai-group-title"
+            className="flex items-center gap-2 text-sm font-bold text-gray-900"
+          >
+            <Sparkles className="h-4 w-4 text-teal-700" aria-hidden="true" />
+            AI อ่านรูป
+          </h2>
+          <span className={`badge ${settings.scanMode === "ai" ? "badge-success" : "badge-slate"}`}>
+            {settings.scanMode === "ai" ? "เปิดใช้งาน" : "ปิดอยู่"}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          วาง API key แล้วระบบจะเดาเจ้าของ key ให้เอง และแสดงเฉพาะโมเดลที่ key นี้ใช้งานได้จริง
+        </p>
+
+        {/* API key + ตรวจเจ้าของ */}
+        <label className="mt-4 block text-xs font-medium text-gray-600">
+          API key
+          <div className="mt-1 flex gap-2">
+            <input
+              type={showKey ? "text" : "password"}
+              value={key}
+              onChange={(event) => onKeyChange(event.target.value)}
+              placeholder={`วาง key ที่นี่ (${info.keyPrefix})`}
+              autoComplete="off"
+              spellCheck={false}
+              className="input min-w-0 flex-1 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              aria-label={showKey ? "ซ่อน key" : "แสดง key"}
+              className="btn btn-secondary"
+            >
+              {showKey ? (
+                <EyeOff className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Eye className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+          </div>
+        </label>
+
+        {detected ? (
+          <p className="mt-2 flex items-center gap-1 text-xs font-medium text-teal-700">
+            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+            ตรวจพบ key ของ {providerName(detected)}
+          </p>
+        ) : key.trim() ? (
+          <p className="mt-2 flex items-center gap-1 text-xs text-amber-700">
+            <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            รูปแบบ key ไม่ตรงกับเจ้าที่รู้จัก — เลือกผู้ให้บริการเองด้านล่าง
+          </p>
+        ) : null}
+
+        {loaded && key && !showKey && (
+          <span className="mt-1 block text-xs text-gray-500">บันทึกไว้: {maskKey(key)}</span>
+        )}
+
+        {/* ผู้ให้บริการ */}
+        <div className="mt-4">
+          <p className="text-xs font-medium text-gray-600">ผู้ให้บริการ</p>
+          <ul className="mt-2 space-y-2">
+            {PROVIDERS.map((provider) => {
+              const active = provider.id === settings.provider;
+              const hasKey = settings.apiKeys[provider.id].trim().length > 0;
+              return (
+                <li key={provider.id}>
+                  <div
+                    className={`rounded-xl border p-3 ${
+                      active ? "border-teal-600 bg-teal-50" : "border-gray-200"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => selectProvider(provider.id)}
+                      aria-pressed={active}
+                      className="w-full text-left"
+                    >
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-gray-900">{provider.name}</span>
+                        {provider.recommended && <span className="badge badge-teal">แนะนำ</span>}
+                        {hasKey && (
+                          <span className="text-xs font-medium text-teal-700">มี key แล้ว</span>
+                        )}
+                      </span>
+                      <span className="mt-1 block text-xs text-gray-700">{provider.summary}</span>
+                    </button>
+                    {active && (
+                      <a
+                        href={provider.keyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:underline"
+                      >
+                        สร้าง API key ที่ {provider.maker}
+                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                      </a>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        {/* โมเดลจริง */}
+        <div className="mt-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+              <KeyRound className="h-3.5 w-3.5 text-gray-400" aria-hidden="true" />
+              โมเดลที่ใช้งานได้
+              {modelState === "ok" && (
+                <span className="badge badge-slate">{models.length}</span>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={() => void loadModels(true)}
+              disabled={!key.trim() || modelState === "loading"}
+              className="btn btn-ghost h-8 px-2 text-xs"
+            >
+              {modelState === "loading" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              ตรวจใหม่
+            </button>
+          </div>
+
+          {modelState === "loading" && (
+            <p className="mt-2 text-xs text-gray-500">กำลังตรวจ key และดึงรายการโมเดล…</p>
+          )}
+          {modelState === "error" && (
+            <p className="mt-2 flex items-start gap-1 text-xs text-red-700" role="alert">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-none" aria-hidden="true" />
+              {modelError}
+            </p>
+          )}
+          {modelState === "idle" && !key.trim() && (
+            <p className="mt-2 text-xs text-gray-500">ใส่ key ก่อน แล้วรายการโมเดลจะขึ้นเอง</p>
+          )}
+          {modelState === "ok" && models.length > 0 && (
+            <p className="mt-2 text-[11px] text-gray-500">
+              {visionCount > 0
+                ? `อ่านรูปได้ ${visionCount} โมเดล`
+                : "ไม่พบโมเดลที่อ่านรูปได้ — เลือกเจ้าอื่นหรือพิมพ์ชื่อโมเดลเอง"}
+            </p>
+          )}
+
+          {modelState === "ok" && models.length > 0 && !useCustomModel ? (
+            <select
+              value={modelInList ? model : ""}
+              onChange={(event) => setModelFor(settings.provider, event.target.value)}
+              className="input mt-2 w-full font-mono text-sm"
+              aria-label={`เลือกโมเดลของ ${info.name}`}
+            >
+              {!modelInList && (
+                <option value="">
+                  {model ? `เดิม: ${model} (ไม่พบในรายการ)` : "เลือกโมเดล"}
+                </option>
+              )}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                  {m.vision ? " · อ่านรูปได้" : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={model}
+              onChange={(event) => setModelFor(settings.provider, event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={DEFAULT_MODELS[settings.provider]}
+              className="input mt-2 w-full font-mono text-sm"
+              aria-label="ชื่อโมเดล"
+            />
+          )}
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setUseCustomModel((v) => !v)}
+              className="text-xs font-medium text-teal-700 hover:underline"
+            >
+              {useCustomModel ? "เลือกจากรายการ" : "พิมพ์ชื่อโมเดลเอง"}
+            </button>
+            {modelState === "ok" && models.length === 0 && (
+              <span className="text-[11px] text-gray-500">— key นี้ยังไม่เห็นโมเดลที่ใช้ได้</span>
+            )}
+          </div>
+        </div>
+
+        {/* ขนาดรูป */}
         <label className="mt-4 block text-xs font-medium text-gray-600">
           ขนาดรูปที่ส่งให้ AI
           <select
@@ -238,18 +472,54 @@ export default function SettingsPage() {
             onChange={(event) => patch({ imageMaxSide: Number(event.target.value) as ImageMaxSide })}
             className="input mt-1 w-full"
           >
-            {IMAGE_SIDES.map((s) => (
-              <option key={s} value={s}>
-                {s} px {s === 1600 ? "(แนะนำ)" : s < 1600 ? "(เร็ว ประหยัด)" : "(ละเอียดสุด ช้ากว่า)"}
+            {IMAGE_SIDES.map((side) => (
+              <option key={side} value={side}>
+                {side} px{" "}
+                {side === 1280 ? "(เร็วสุด)" : side === 1600 ? "(แนะนำ)" : "(ละเอียดสุด ช้ากว่า)"}
               </option>
             ))}
           </select>
         </label>
+
+        {/* ความเร็ว */}
+        <div className="mt-4">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+            <Gauge className="h-3.5 w-3.5 text-gray-400" aria-hidden="true" />
+            ความเร็ว / การลองใหม่
+          </p>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            {SPEED_PRESETS.map((preset) => {
+              const active = speedPreset === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => patch({ aiMaxAttempts: preset.attempts, aiTimeoutSec: preset.timeout })}
+                  className={`rounded-lg border px-2 py-2 text-center text-xs transition-colors ${
+                    active
+                      ? "border-teal-600 bg-teal-50 font-bold text-teal-900"
+                      : "border-gray-200 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  <span className="block">{preset.label}</span>
+                  <span className="mt-0.5 block text-[10px] font-normal text-gray-500">
+                    {preset.desc}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </section>
 
-      <section className="card mt-4 p-4 text-xs text-gray-600 sm:p-5">
-        <h2 className="text-sm font-bold text-gray-900">ความเป็นส่วนตัว</h2>
-        <ul className="mt-2 list-disc space-y-1 pl-4">
+      {/* ================= อื่น ๆ ================= */}
+      <section className="card mt-4 p-4 sm:p-5" aria-labelledby="other-group-title">
+        <h2 id="other-group-title" className="flex items-center gap-2 text-sm font-bold text-gray-900">
+          <ShieldCheck className="h-4 w-4 text-teal-700" aria-hidden="true" />
+          ความเป็นส่วนตัวและอื่น ๆ
+        </h2>
+        <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-gray-600">
           <li>API key เก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ไม่ถูกบันทึกลงฐานข้อมูล</li>
           <li>ตอนสแกน รูปและ key จะส่งผ่านเซิร์ฟเวอร์ของแอปไปยังผู้ให้บริการ AI ที่เลือก เซิร์ฟเวอร์ไม่เก็บไว้</li>
           <li>รูปฉลากมีชื่อและที่อยู่ลูกค้า ตรวจเงื่อนไขการใช้ข้อมูลของผู้ให้บริการก่อนใช้งานจริง</li>

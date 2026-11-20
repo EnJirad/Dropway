@@ -154,6 +154,29 @@ export function isAiReady(s: AppSettings): boolean {
   return s.scanMode === "ai" && s.apiKeys[s.provider].trim().length > 0;
 }
 
+/** รูปแบบ key ของแต่ละเจ้า — ใช้เดาว่าวาง key ของใครเข้ามา */
+const KEY_PATTERNS: { provider: AiProvider; re: RegExp }[] = [
+  // ต้องเช็ค Anthropic ก่อน OpenAI เพราะขึ้นต้นด้วย sk- เหมือนกัน
+  { provider: "anthropic", re: /^sk-ant-(?:api\d\d-)?[A-Za-z0-9_-]{16,}$/ },
+  { provider: "gemini", re: /^AIza[0-9A-Za-z_-]{30,}$/ },
+  { provider: "openai", re: /^sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}$/ },
+];
+
+/** เดาผู้ให้บริการจาก API key ที่วางเข้ามา (null = จำไม่ได้) */
+export function detectProvider(key: string): AiProvider | null {
+  const value = key.trim();
+  if (!value || value.length > 300) return null;
+  for (const pattern of KEY_PATTERNS) {
+    if (pattern.re.test(value)) return pattern.provider;
+  }
+  return null;
+}
+
+/** ชื่อผู้ให้บริการสำหรับข้อความบนหน้าจอ */
+export function providerName(provider: AiProvider): string {
+  return PROVIDERS.find((p) => p.id === provider)?.name ?? provider;
+}
+
 export function maskKey(key: string): string {
   const k = key.trim();
   if (k.length <= 8) return k ? "••••" : "";
