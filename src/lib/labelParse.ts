@@ -75,10 +75,12 @@ export function parseLabel(text: string): LabelFields {
   const head = address.split(/ม\.|หมู่|\bmoo\b/i)[0];
   const houseNo = head.match(/\d{1,5}(?:\/\d{1,4})?/)?.[0] ?? "";
 
-  const postalCode =
-    [...address.matchAll(/(?<!\d)([1-9]\d{4})(?!\d)/g)].pop()?.[1] ??
-    [...recipientLines.join(" ").matchAll(/(?<!\d)([1-9]\d{4})(?!\d)/g)].pop()?.[1] ??
-    "";
+  // ไม่ใช้ spread กับ matchAll เพราะ tsconfig ไม่ได้ตั้ง target (ค่าเริ่มต้น ES5)
+  const lastPostal = (s: string): string | undefined => {
+    const all = Array.from(s.matchAll(/(?:^|\D)([1-9]\d{4})(?!\d)/g));
+    return all.length ? all[all.length - 1][1] : undefined;
+  };
+  const postalCode = lastPostal(address) ?? lastPostal(recipientLines.join(" ")) ?? "";
 
   return { name, phone, houseNo, address, postalCode, tracking };
 }
