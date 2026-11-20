@@ -2404,16 +2404,40 @@ export default function NavigationPage() {
                     )}
 
                     <div className="relative flex flex-1 flex-col p-4 sm:p-5">
-                      {/* ลำดับที่ + ชื่อ + สถานะพิกัด */}
-                      <div className="flex flex-wrap items-baseline gap-2">
-                        <span className="text-lg font-extrabold text-teal-700">
-                          #{displayOrder}
-                        </span>
-                        <h3 className="text-wrap-safe line-clamp-2 text-lg font-bold text-orange-700">
-                          {h.full_name || "ไม่มีชื่อ"}
-                        </h3>
-                        {!h.lat && !h.lng && (
-                          <span className="badge badge-amber">ไม่มีพิกัด</span>
+                      {/* ลำดับที่ + ชื่อ + สถานะ + ระยะทาง */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="text-lg font-extrabold text-teal-700">
+                            #{displayOrder}
+                          </span>
+                          <h3 className="text-wrap-safe line-clamp-2 text-base font-bold text-orange-700 sm:text-lg">
+                            {h.full_name || "ไม่มีชื่อ"}
+                          </h3>
+                          {(() => {
+                            const status = h.delivery_status;
+                            const label =
+                              status === "delivered"
+                                ? "ส่งแล้ว"
+                                : status === "reported"
+                                  ? "รายงาน"
+                                  : "รอส่ง";
+                            const tone =
+                              status === "delivered"
+                                ? "badge-success"
+                                : status === "reported"
+                                  ? "badge-danger"
+                                  : "badge-amber";
+                            return <span className={`badge ${tone}`}>{label}</span>;
+                          })()}
+                          {!h.lat && !h.lng && (
+                            <span className="badge badge-amber">ไม่มีพิกัด</span>
+                          )}
+                        </div>
+                        {h.distance !== undefined && h.distance < Infinity && (
+                          <span className="ml-auto inline-flex flex-none items-center gap-1 rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-bold text-teal-700">
+                            <MapPin className="h-3 w-3" aria-hidden="true" />
+                            {h.distance.toFixed(1)} กม.
+                          </span>
                         )}
                       </div>
                       {h.phone && (
@@ -2455,15 +2479,7 @@ export default function NavigationPage() {
                         </span>
                       </div>
 
-                      {/* ระยะทางโดยประมาณ */}
-                      {h.distance !== undefined && h.distance < Infinity && (
-                        <p className="text-xs text-gray-500 mt-3">
-                          ระยะทางโดยประมาณ ~{" "}
-                          <span className="font-bold text-teal-700">
-                            {h.distance.toFixed(1)} กม.
-                          </span>
-                        </p>
-                      )}
+                      {/* ระยะทางถูกย้ายไปเป็นป้ายมุมขวาบนของการ์ดแล้ว */}
 
                       {/* หมายเหตุทั่วไปของบ้าน */}
                       {h.note && (
@@ -2769,6 +2785,26 @@ export default function NavigationPage() {
               },
             )}
           </div>
+
+          {filteredList.length === 0 && (
+            <div className="empty-state card mt-2">
+              <Search className="h-10 w-10 text-gray-300" aria-hidden="true" />
+              <p className="text-base font-bold text-gray-700">ไม่พบรายการในมุมมองนี้</p>
+              <p className="text-sm text-gray-500">ลองล้างคำค้นหรือปิดตัวกรองพิกัดก่อน</p>
+              <button
+                type="button"
+                onClick={() => {
+                  clearSearch();
+                  setShowNoCoords(false);
+                  setShowWithCoords(false);
+                }}
+                className="btn btn-secondary mt-2"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
+          )}
+
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="mt-12 mb-20 flex flex-col items-center gap-4">

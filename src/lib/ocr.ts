@@ -32,6 +32,8 @@ const OCR_MIN_SIDE = 1000;
 const RETRY_CONFIDENCE = 70;
 /** ตัวอักษรไทยน้อยกว่านี้ถือว่าอ่านไม่ครบ */
 const RETRY_THAI_CHARS = 10;
+/** เวลารวมสูงสุดก่อนหยุดลองหมุนภาพ (ms) */
+const ROTATION_BUDGET_MS = 12_000;
 
 function clearIdleTimer() {
   if (idleTimer !== null) {
@@ -178,6 +180,22 @@ function thaiCharCount(text: string): number {
   return matches ? matches.length : 0;
 }
 
+/** หมุนภาพเป็นจำนวนเท่าของ 90° (1=90, 2=180, 3=270) */
+function rotateCanvas(source: HTMLCanvasElement, quarterTurns: number): HTMLCanvasElement {
+  const turns = ((quarterTurns % 4) + 4) % 4;
+  if (turns === 0) return source;
+  const swap = turns === 1 || turns === 3;
+  const canvas = document.createElement("canvas");
+  canvas.width = swap ? source.height : source.width;
+  canvas.height = swap ? source.width : source.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return source;
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((turns * Math.PI) / 2);
+  ctx.drawImage(source, -source.width / 2, -source.height / 2);
+  return canvas;
+}
+
 type OcrPass = { text: string; confidence: number };
 
 function quality(pass: OcrPass): number {
@@ -229,10 +247,29 @@ export async function recognizeLabel(file: File): Promise<OcrAttempt> {
       }
 
       const best = passes.reduce((a, b) => (quality(b) > quality(a) ? b : a));
+
+      // ใบปะหน้าเอียง/ตะแคง: ถ้าอ่านตรง ๆ ยังไม่ดี ให้ลองหมุน 90/270/180 องศา
+      let chosen = best;
+      if (needsRetry(best)) {
+        for (const turns of [1, 3, 2]) {
+          if (elapsed() > ROTATION_BUDGET_MS) break;
+          const rotated = rotateCanvas(canvas, turns);
+          const res = await worker.recognize(rotated);
+          const pass: OcrPass = {
+            text: res.data.text ?? "",
+            confidence: typeof res.data.confidence === "number" ? res.data.confidence : 0,
+          };
+          passes.push(pass);
+          if (quality(pass) > quality(chosen)) chosen = pass;
+          // พอแล้วถ้าอ่านไทยได้ครบและมั่นใจสูง
+          if (chosen.confidence >= 82 && thaiCharCount(chosen.text) >= 15) break;
+        }
+      }
+
       return {
         ok: true,
-        text: best.text,
-        confidence: Math.round(best.confidence),
+        text: chosen.text,
+        confidence: Math.round(chosen.confidence),
         passes: passes.length,
         ms: elapsed(),
       };

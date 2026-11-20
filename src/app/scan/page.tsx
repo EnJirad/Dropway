@@ -39,9 +39,11 @@ import {
 
 const SCANNER_REGION_ID = "qr-scan-region";
 /** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง */
-const AUTO_HOLD_MS = 1700;
+const AUTO_HOLD_MS = 700;
+/** ตรวจจับนิ่งต่อเนื่องกี่ ms พร้อมกับ hold */
+const AUTO_STILL_MS = 380;
 /** ตรวจเฟรมทุกกี่ ms */
-const AUTO_TICK_MS = 450;
+const AUTO_TICK_MS = 260;
 /** หลังเพิ่มสำเร็จ เว้นช่วงก่อนสแกนชิ้นถัดไป กันสแกนซ้ำใบเดิม */
 const AUTO_COOLDOWN_MS = 2600;
 const UUID_PATTERN =
@@ -428,7 +430,7 @@ export default function ScanPage() {
   const captureFrame = useCallback(async (): Promise<File | null> => {
     const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
     if (!video || !video.videoWidth || !video.videoHeight) return null;
-    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+    const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
@@ -450,7 +452,7 @@ export default function ScanPage() {
     });
   }, []);
 
-  // ตรวจเฟรมจากกล้องตลอดเวลา: ถ้าเห็นใบปะหน้านิ่งต่อเนื่อง ~1.7 วิ → ถ่ายและอ่านเอง
+  // ตรวจเฟรมจากกล้องตลอดเวลา: เห็นใบปะหน้า + นิ่งสั้น ๆ ~0.7 วิ → ถ่ายและอ่านเอง
   useEffect(() => {
     if (!scanning || loading || sheetOpen) {
       setAutoStatus("idle");
@@ -467,6 +469,7 @@ export default function ScanPage() {
 
     let prevGray: Uint8ClampedArray | null = null;
     let holdStart = 0;
+    let stillSince = 0;
     let cancelled = false;
     let busy = false;
 
@@ -494,19 +497,31 @@ export default function ScanPage() {
       const frame = analyzeCanvas(canvas);
       if (!frame) return;
 
-      const steady = prevGray ? frameDifference(prevGray, frame.gray) < 7 : false;
+      // ความนิ่งแบบผ่อนปรน: มือสั่นเล็กน้อยยังนับว่านิ่ง
+      const diff = prevGray ? frameDifference(prevGray, frame.gray) : 999;
+      const moving = diff > 12;
       const label = looksLikeLabel(frame);
       prevGray = frame.gray;
 
       if (!label) {
         holdStart = 0;
+        stillSince = 0;
         setAutoStatus("searching");
         return;
       }
 
-      if (!holdStart) holdStart = Date.now();
-      if (steady && Date.now() - holdStart >= AUTO_HOLD_MS) {
+      const now = Date.now();
+      if (!holdStart) holdStart = now;
+      if (moving) {
+        stillSince = 0;
+      } else if (!stillSince) {
+        stillSince = now;
+      }
+
+      const stillFor = stillSince ? now - stillSince : 0;
+      if (stillFor >= AUTO_STILL_MS && now - holdStart >= AUTO_HOLD_MS) {
         holdStart = 0;
+        stillSince = 0;
         busy = true;
         setAutoStatus("capturing");
         void captureFrame().then((file) => {
@@ -519,7 +534,7 @@ export default function ScanPage() {
         });
         return;
       }
-      setAutoStatus(steady ? "holding" : "searching");
+      setAutoStatus(stillFor >= AUTO_STILL_MS ? "holding" : "searching");
     };
 
     const timer = window.setInterval(tick, AUTO_TICK_MS);
