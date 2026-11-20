@@ -50,16 +50,77 @@ export async function POST(request: NextRequest) {
         ? body.tracking_number.trim().toUpperCase()
         : null;
 
-    const result = await sql`
-      INSERT INTO public.user_navigation_houses (
-        user_id, house_id, nav_note, nav_priority, delivery_status, tracking_number
-      ) VALUES (
-        ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending', ${trackingNumber}
-      )
-      RETURNING *;
+    if (!houseId) {
+      return NextResponse.json({ error: "house_id is required" }, { status: 400 });
+    }
+    const force = body.force === true;
+    // as_parcel: หน้าสแกนเพิ่มพัสดุอีกชิ้น (แม้ไม่มีเลขพัสดุ); ที่อื่นเรียกซ้ำจะไม่เพิ่มพัสดุซ้ำ
+    const asParcel = body.as_parcel === true || trackingNumber !== null;
+
+    // จุดนำทางเดิมของบ้านนี้ (ที่ยังไม่ส่งแล้ว) → ใช้จุดเดิม ไม่สร้างจุดซ้ำ
+    const existingRows = await sql`
+      SELECT id FROM public.user_navigation_houses
+      WHERE house_id = ${houseId} AND user_id = ${userId} AND delivery_status <> 'delivered'
+      ORDER BY created_at DESC
+      LIMIT 1;
+    `;
+    const existingId: string | null = existingRows[0]?.id ? String(existingRows[0].id) : null;
+
+    if (trackingNumber) {
+      const dup = await sql`
+        SELECT nav_id FROM public.parcels
+        WHERE upper(tracking_number) = ${trackingNumber}
+          AND (
+            nav_id = ${existingId}
+            OR (created_at AT TIME ZONE 'Asia/Bangkok')::date = (now() AT TIME ZONE 'Asia/Bangkok')::date
+          );
+      `;
+      if (existingId && dup.some((d) => String(d.nav_id) === existingId)) {
+        return NextResponse.json(
+          { error: "บ้านนี้มีพัสดุเลขนี้ในคิวแล้ว", duplicate: true, same_stop: true },
+          { status: 409 }
+        );
+      }
+      if (dup.length > 0 && !force) {
+        return NextResponse.json(
+          { error: "เลขพัสดุนี้ถูกบันทึกวันนี้แล้ว", duplicate: true, same_stop: false },
+          { status: 409 }
+        );
+      }
+    }
+
+    let navId = existingId;
+    const created = !existingId;
+    if (!navId) {
+      const inserted = await sql`
+        INSERT INTO public.user_navigation_houses (
+          user_id, house_id, nav_note, nav_priority, delivery_status
+        ) VALUES (
+          ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending'
+        )
+        RETURNING id;
+      `;
+      navId = String(inserted[0].id);
+    }
+
+    if (created || asParcel) {
+      await sql`
+        INSERT INTO public.parcels (nav_id, tracking_number)
+        VALUES (${navId}, ${trackingNumber});
+      `;
+    }
+
+    const countRows = await sql`
+      SELECT count(*)::int AS n FROM public.parcels WHERE nav_id = ${navId};
     `;
 
-    return NextResponse.json({ data: result[0], success: true });
+    return NextResponse.json({
+      data: { id: navId, house_id: houseId },
+      nav_id: navId,
+      parcel_count: countRows[0]?.n ?? 1,
+      added_to_existing: !created,
+      success: true,
+    });
   } catch (error) {
     console.error("API /api/navigation POST error:", error);
     return NextResponse.json(

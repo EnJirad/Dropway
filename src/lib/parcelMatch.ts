@@ -6,7 +6,11 @@ export type HouseMatch = {
   house: House;
   score: number;
   level: MatchLevel;
-  matched: { name: boolean; houseNo: boolean; phone: boolean; tracking: boolean };
+  matched: { name: boolean; houseNo: boolean; phone: boolean };
+  /** เหตุผลที่จับคู่ (แสดงให้ผู้ใช้เห็น) */
+  reasons: string[];
+  /** ข้อมูลที่ขัดแย้ง เช่น เบอร์บนฉลากไม่ตรงกับเบอร์ในคลัง */
+  conflicts: string[];
 };
 
 const UUID_G = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -103,18 +107,22 @@ function textNumbers(text: string): Set<string> {
   return found;
 }
 
+/** เบอร์โทรไทยที่พบในข้อความ (ตัดช่องว่าง/ขีด แล้วหาเบอร์มือถือ 10 หลัก หรือเบอร์บ้าน 9 หลัก) */
+function phonesInText(text: string): string[] {
+  const compact = text.replace(/[\s-]/g, "");
+  return compact.match(/0[689]\d{8}|0[2-7]\d{7}/g) ?? [];
+}
+
 /**
  * เทียบข้อความจากฉลาก (OCR / บาร์โค้ด) กับบ้านในคลัง
- * ให้คะแนนจาก เลขพัสดุที่เคยบันทึก, เบอร์โทร, ชื่อ และบ้านเลขที่
+ * ใช้ ชื่อ, เบอร์โทร และบ้านเลขที่ เท่านั้น (เลขพัสดุเป็นของพัสดุ ไม่ใช่ตัวระบุบ้าน)
+ * ผลลัพธ์บอกเหตุผลและข้อมูลที่ขัดแย้งด้วย
  */
-export function matchHouses(
-  houses: House[],
-  text: string,
-  trackedHouseId?: string | null,
-): HouseMatch[] {
+export function matchHouses(houses: House[], text: string): HouseMatch[] {
   const textSkel = skeleton(text.replace(UUID_G, " "));
   const nums = textNumbers(text);
   const digits = text.replace(/\D/g, "");
+  const labelPhones = phonesInText(text);
   const out: HouseMatch[] = [];
 
   for (const house of houses) {
@@ -123,20 +131,26 @@ export function matchHouses(
     const houseNo = houseNumbers(house.address).some((x) => nums.has(x));
     const phoneDigits = (house.phone ?? "").replace(/\D/g, "").slice(-9);
     const phone = phoneDigits.length === 9 && digits.includes(phoneDigits);
-    const tracking = !!trackedHouseId && house.id === trackedHouseId;
 
-    const score =
-      (tracking ? 100 : 0) +
-      (phone ? 60 : 0) +
-      (name ? Math.round(n * 50) : 0) +
-      (houseNo ? 40 : 0);
+    const score = (phone ? 60 : 0) + (name ? Math.round(n * 50) : 0) + (houseNo ? 40 : 0);
     if (score === 0) continue;
 
-    let level: MatchLevel = "medium";
-    if (tracking || (n >= 0.99 && houseNo)) level = "exact";
-    else if (phone || (name && houseNo)) level = "high";
+    const reasons: string[] = [];
+    if (name) reasons.push(n >= 0.99 ? "ชื่อตรง" : "ชื่อใกล้เคียง");
+    if (phone) reasons.push("เบอร์โทรตรง");
+    if (houseNo) reasons.push("บ้านเลขที่ตรง");
 
-    out.push({ house, score, level, matched: { name, houseNo, phone, tracking } });
+    const conflicts: string[] = [];
+    if (phoneDigits.length === 9 && !phone && labelPhones.length > 0) {
+      conflicts.push("เบอร์บนฉลากไม่ตรงกับเบอร์ในคลัง");
+    }
+
+    let level: MatchLevel = "medium";
+    if ((n >= 0.99 && houseNo) || (phone && name)) level = "exact";
+    else if (phone || (name && houseNo)) level = "high";
+    if (conflicts.length > 0 && level !== "medium") level = "medium";
+
+    out.push({ house, score, level, matched: { name, houseNo, phone }, reasons, conflicts });
   }
 
   return out.sort((a, b) => b.score - a.score).slice(0, 5);

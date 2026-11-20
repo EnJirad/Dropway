@@ -394,27 +394,44 @@ export default function ScanPage() {
       if (!result || adding) return;
       setAdding(true);
       try {
-        let isDuplicate = false;
-        const res = await fetch("/api/navigation", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ house_id: result.id, tracking_number: tracking }),
-        });
-        const json = await res.json().catch(() => ({}));
+        const post = (force: boolean) =>
+          fetch("/api/navigation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              house_id: result.id,
+              tracking_number: tracking,
+              as_parcel: true,
+              force,
+            }),
+          });
 
-        if (!res.ok) {
-          if (json.error?.includes("duplicate") || json.error?.includes("23505")) {
-            isDuplicate = true;
-          } else {
-            throw new Error(json.error || "เพิ่มไม่สำเร็จ");
+        let res = await post(false);
+        let json = await res.json().catch(() => ({}));
+
+        if (res.status === 409 && json.duplicate) {
+          if (json.same_stop) {
+            setAdded(true);
+            if (!silent) toast.error("บ้านนี้มีพัสดุเลขนี้ในคิวแล้ว");
+            return;
           }
+          // เลขพัสดุซ้ำกับบ้านอื่นในวันนี้ → เตือนและให้ผู้ใช้ยืนยันเอง
+          const proceed = window.confirm(
+            `เลขพัสดุ ${tracking ?? ""} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
+          );
+          if (!proceed) return;
+          res = await post(true);
+          json = await res.json().catch(() => ({}));
         }
+
+        if (!res.ok) throw new Error(json.error || "เพิ่มไม่สำเร็จ");
 
         setAdded(true);
         if (!silent) {
+          const count = Number(json.parcel_count ?? 1);
           toast.success(
-            isDuplicate
-              ? "บ้านนี้อยู่ในรายการนำทางแล้ว"
+            json.added_to_existing
+              ? `เพิ่มพัสดุชิ้นที่ ${count} ที่บ้านนี้แล้ว`
               : "เพิ่มเข้าคิวนำทางแล้ว",
           );
         }
@@ -629,7 +646,7 @@ export default function ScanPage() {
                       m.matched.name ? "ชื่อตรง" : null,
                       m.matched.houseNo ? "บ้านเลขที่ตรง" : null,
                       m.matched.phone ? "เบอร์ตรง" : null,
-                      m.matched.tracking ? "เลขพัสดุเคยบันทึก" : null,
+                      m.conflicts.length > 0 ? "⚠ " + m.conflicts.join(" • ") : null,
                     ]
                       .filter(Boolean)
                       .join(" • ") || "ตรงบางส่วน"}

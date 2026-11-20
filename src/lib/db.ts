@@ -83,6 +83,26 @@ export async function ensureDatabaseSchema(): Promise<void> {
     // 2.1 เลขพัสดุ (เพิ่มภายหลัง จึงใช้ ALTER เพื่อรองรับฐานข้อมูลเดิม)
     await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS tracking_number TEXT;`;
 
+    // 2.2 พัสดุรายชิ้น: จุดนำทางหนึ่งจุดมีได้หลายพัสดุ เลขพัสดุเก็บที่ระดับพัสดุ ไม่เก็บใน houses
+    await sql`
+      CREATE TABLE IF NOT EXISTS public.parcels (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        nav_id UUID NOT NULL REFERENCES public.user_navigation_houses(id) ON DELETE CASCADE,
+        tracking_number TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `;
+    // เลขพัสดุซ้ำได้ข้ามจุดนำทาง/ข้ามวัน แต่ห้ามซ้ำภายในจุดเดียวกัน (กันกดเพิ่มซ้ำ)
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_parcels_nav_tracking ON public.parcels (nav_id, upper(tracking_number)) WHERE tracking_number IS NOT NULL;`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_parcels_tracking ON public.parcels (upper(tracking_number));`;
+    // ย้ายข้อมูลเดิม (เพิ่มอย่างเดียว ไม่ลบ/ไม่แก้แถวเดิม): แถวนำทางที่ยังไม่มีพัสดุ = 1 พัสดุ
+    await sql`
+      INSERT INTO public.parcels (nav_id, tracking_number, created_at)
+      SELECT unh.id, unh.tracking_number, unh.created_at
+      FROM public.user_navigation_houses unh
+      WHERE NOT EXISTS (SELECT 1 FROM public.parcels p WHERE p.nav_id = unh.id);
+    `;
+
     // 3. วิว navigation_view
     await sql`
       CREATE OR REPLACE VIEW public.navigation_view AS
@@ -109,7 +129,24 @@ export async function ensureDatabaseSchema(): Promise<void> {
         h.quantity,
         h.created_at,
         h.updated_at,
-        unh.tracking_number
+        COALESCE(
+          (SELECT string_agg(p.tracking_number, ', ' ORDER BY p.created_at)
+             FROM public.parcels p
+             WHERE p.nav_id = unh.id AND p.tracking_number IS NOT NULL),
+          unh.tracking_number
+        ) AS tracking_number,
+        GREATEST(
+          (SELECT count(*)::int FROM public.parcels p WHERE p.nav_id = unh.id),
+          1
+        ) AS parcel_count,
+        (SELECT COALESCE(
+                  json_agg(json_build_object(
+                    'id', p.id,
+                    'tracking_number', p.tracking_number,
+                    'created_at', p.created_at
+                  ) ORDER BY p.created_at),
+                  '[]'::json)
+           FROM public.parcels p WHERE p.nav_id = unh.id) AS parcels
       FROM public.user_navigation_houses unh
       LEFT JOIN public.houses h ON unh.house_id = h.id;
     `;

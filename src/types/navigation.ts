@@ -34,7 +34,11 @@ export type NavigationHouse = {
   driver_note?: string | null;
 
   // เลขพัสดุที่สแกนตอนเพิ่มเข้าคิวนำทาง
-  tracking_number?: string | null;
+  tracking_number?: string | null; // รวมเลขพัสดุทุกชิ้นของจุดนี้ คั่นด้วย ", "
+
+  // พัสดุรายชิ้นของจุดนำทางนี้ (จากตาราง parcels)
+  parcel_count?: number;
+  parcels?: { id: string; tracking_number: string | null; created_at: string }[];
 
   // ⭐ ข้อมูลการโทร (ถ้าจะใช้ในอนาคต)
   call_count?: number;
