@@ -1,5 +1,36 @@
 # .ai/CHANGELOG.md
 
+## 2026-11-20 — อัปเกรดระบบฐานข้อมูล Supabase และโครงสร้างเอกสารโปรเจกต์
+
+### หัวข้อ
+- เพิ่มโฟลเดอร์ `supabase/` พร้อมสคริปต์ SQL Editor สำหรับสร้างตารางทั้งหมด (`schema.sql`), ข้อมูลตัวอย่าง (`seed.sql`), รีเซ็ต (`reset.sql`), และคู่มือ `supabase/README.md`
+- ปรับปรุง `src/lib/supabase.ts` เพื่อป้องกัน Fatal Crash เมื่อเปิดโปรเจกต์บนเครื่องใหม่ที่ยังไม่ได้ใส่ `.env.local`
+- เพิ่มเครื่องมือตรวจสอบอัตโนมัติ `npm run test:supabase` และ `npm run check`
+- ปรับปรุงโครงสร้างโปรเจกต์ เพิ่ม `src/types/index.ts`, `SETUP_GUIDE.md`, `.env.example`, และอัปเกรด `README.md` ให้ครอบคลุมทุกการตั้งค่า
+
+### ของเดิมที่ตรวจก่อนแก้
+- ไม่มีโฟลเดอร์ `supabase/` หรือไฟล์ SQL ใดๆ ใน repo สำหรับสร้างฐานข้อมูลใหม่
+- `src/lib/supabase.ts` เรียก `createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, ...)` โดยตรง เมื่อไม่มี `.env.local` จะเกิด Fatal Crash ทันทีที่โหลดแอป
+- ไม่มี `.env.example` หรือคู่มือการติดตั้งสำหรับเครื่องใหม่
+
+### เปลี่ยนอะไร
+- `supabase/schema.sql`: สคริปต์ DDL ที่รันซ้ำได้ (Idempotent) สร้างตาราง `houses`, `user_navigation_houses`, วิว `navigation_view`, Indexes, Triggers, และ RLS Policies
+- `supabase/seed.sql`: ข้อมูลตัวอย่าง 10 หลังพร้อมพิกัด GPS จริง
+- `supabase/reset.sql`: สคริปต์ล้างข้อมูลอย่างปลอดภัย
+- `src/lib/supabase.ts`: ตรวจสอบ `isSupabaseConfigured` และมี fallback placeholder ป้องกัน Fatal Crash
+- `src/types/index.ts`: รวม Export types ทั้งหมด
+- `scripts/test-supabase.mjs`: สคริปต์ทดสอบการเชื่อมต่อ Supabase Database & Auth
+- `scripts/check-project.mjs`: Health Check รัน TypeScript check + ESLint + Supabase test
+- `package.json`: เพิ่มคำสั่ง `check`, `test:supabase`, `db:test`
+- `SETUP_GUIDE.md` และ `README.md`: คู่มือการติดตั้งและคำอธิบายโครงสร้างระบบ
+
+### ผลการตรวจสอบ
+- `node node_modules/typescript/bin/tsc --noEmit` → Exit code 0 (Zero Errors)
+- `npm run lint` → Exit code 0 (`✔ No ESLint warnings or errors`)
+- `npm run check` → Exit code 0
+- Report: `.ai/reports/2026-11-20-project-upgrade-and-db-setup.md`
+
+
 ## 2026-10-22 — นำรายการจาก "ส่งแล้ว" กลับไป "วันนี้" (แก้เคสกดยืนยันผิด)
 
 ### หัวข้อ

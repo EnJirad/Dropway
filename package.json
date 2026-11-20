@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "check": "node scripts/check-project.mjs",
+    "test:supabase": "node scripts/test-supabase.mjs",
+    "db:test": "node scripts/test-supabase.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

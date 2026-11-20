@@ -6,6 +6,14 @@ This is a factual snapshot of the repository and the documentation effort that c
 - URL: `https://github.com/MnsEn2001/drop-way.git`
 - Default branch: `main`
 
+## Database Setup & Project Modernization (2026-11-20)
+- Added dedicated `supabase/` folder with `schema.sql`, `seed.sql`, `reset.sql`, and `README.md` for 1-click execution in Supabase SQL Editor.
+- Updated `src/lib/supabase.ts` with graceful fallback and `isSupabaseConfigured` check to prevent client fatal crashes when `.env.local` is missing.
+- Added `scripts/test-supabase.mjs` and `scripts/check-project.mjs` with npm script shortcuts (`npm run test:supabase`, `npm run check`).
+- Added comprehensive setup guides: `SETUP_GUIDE.md`, updated `README.md`, `.env.example`, and `src/types/index.ts`.
+- All checks pass: TypeScript type check (0 errors), ESLint (0 warnings/errors), Project Health Check (PASS).
+- Report: `.ai/reports/2026-11-20-project-upgrade-and-db-setup.md`.
+
 ## Latest verified GitHub `main` SHA
 - Before the 2026-10-12 redesign session: `f3ab31d18c5b16ffb93e0af500046fcc18fa9758`
 - Redesign commit pushed and verified: `89cd5011428fb4a95e22662ed2f295569e2d98a8`
