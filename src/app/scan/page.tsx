@@ -7,9 +7,10 @@ import {
   Camera,
   CameraOff,
   Loader2,
-  QrCode,
   ScanText,
   Search,
+  Zap,
+  ZapOff,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
@@ -37,8 +38,6 @@ import {
 } from "@/lib/scanMerge";
 
 const SCANNER_REGION_ID = "qr-scan-region";
-/** จำสถานะเปิด/ปิดโหมดสแกนอัตโนมัติ */
-const AUTO_SCAN_KEY = "dropway_auto_scan_v1";
 /** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง */
 const AUTO_HOLD_MS = 1700;
 /** ตรวจเฟรมทุกกี่ ms */
@@ -260,11 +259,12 @@ export default function ScanPage() {
   const [added, setAdded] = useState(false);
   const [lastCode, setLastCode] = useState("");
 
-  /** สแกนอัตโนมัติ: จ่อใบปะหน้าแล้วระบบถ่ายให้เอง */
-  const [autoMode, setAutoMode] = useState(false);
+  /** สถานะการตรวจจับใบปะหน้าจากกล้องสด */
   const [autoStatus, setAutoStatus] = useState<"idle" | "searching" | "holding" | "capturing">(
     "idle",
   );
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchAvailable, setTorchAvailable] = useState(false);
   const cooldownRef = useRef(0);
 
   useModalKeyboardBehavior();
@@ -273,6 +273,8 @@ export default function ScanPage() {
     const scanner = scannerRef.current;
     scannerRef.current = null;
     setScanning(false);
+    setTorchOn(false);
+    setTorchAvailable(false);
     if (!scanner) return;
     try {
       await scanner.stop();
@@ -290,11 +292,6 @@ export default function ScanPage() {
   useEffect(() => {
     const settings = loadSettings();
     if (settings.scanMode === "ocr" || settings.fallbackToOcr) warmupOcr();
-    try {
-      setAutoMode(window.localStorage.getItem(AUTO_SCAN_KEY) === "1");
-    } catch {
-      // storage ถูกบล็อก — ใช้ค่าเริ่มต้น (ปิด)
-    }
     return () => {
       void disposeOcr();
     };
@@ -393,6 +390,7 @@ export default function ScanPage() {
           if (options.auto) {
             // โหมดอัตโนมัติ: อย่าเปิดชีตด้วยข้อมูลว่าง ให้จ่อใหม่แล้วสแกนต่อ
             setAutoStatus("searching");
+            cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
             toast.error("ยังอ่านไม่เจอ — จ่อใบปะหน้าให้ชิดขึ้นแล้วถือไว้อีกนิด");
             return;
           }
@@ -454,7 +452,7 @@ export default function ScanPage() {
 
   // ตรวจเฟรมจากกล้องตลอดเวลา: ถ้าเห็นใบปะหน้านิ่งต่อเนื่อง ~1.7 วิ → ถ่ายและอ่านเอง
   useEffect(() => {
-    if (!autoMode || !scanning || loading || sheetOpen) {
+    if (!scanning || loading || sheetOpen) {
       setAutoStatus("idle");
       return;
     }
@@ -531,55 +529,41 @@ export default function ScanPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [autoMode, scanning, loading, sheetOpen, captureFrame, scanPhoto]);
+  }, [scanning, loading, sheetOpen, captureFrame, scanPhoto]);
 
-  const handleDecoded = useCallback(
-    async (text: string) => {
-      if (handlingRef.current) return;
-      const trimmed = text.trim();
-      if (!trimmed) return;
+  /** ดึง track ของกล้องที่กำลังเล่นอยู่ (ใช้ควบคุมแฟลช) */
+  const getVideoTrack = useCallback((): MediaStreamTrack | null => {
+    const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
+    const stream = video?.srcObject as MediaStream | null;
+    const tracks = stream?.getVideoTracks?.() ?? [];
+    return tracks.length ? tracks[0] : null;
+  }, []);
 
-      handlingRef.current = true;
-      setLoading(true);
-      setLoadingTitle("กำลังค้นหาบ้าน");
-      setStage("กำลังเทียบรหัสกับคลังบ้าน…");
-      setSheetOpen(false);
-      setDraft(emptyFields());
-      setNotice(null);
-      setAdded(false);
-      setSameParcel(null);
-      setLastCode(trimmed);
+  const detectTorch = useCallback(() => {
+    const track = getVideoTrack();
+    const caps = track?.getCapabilities?.() as
+      | (MediaTrackCapabilities & { torch?: boolean })
+      | undefined;
+    setTorchAvailable(Boolean(caps?.torch));
+  }, [getVideoTrack]);
 
-      try {
-        // พักภาพหลังอ่านได้ครั้งแรก กันการสแกนซ้ำรัว ๆ (โหมดออโต้ปล่อยกล้องไว้)
-        if (!autoMode) {
-          try {
-            scannerRef.current?.pause(true);
-          } catch {
-            // ignore
-          }
-        }
-
-        const found = await applyIdentify(trimmed);
-        setLoading(false);
-        setStage(null);
-        setSheetOpen(true);
-        if (found) toast.success("พบบ้านแล้ว");
-        else toast.error("ไม่พบข้อมูลบ้านจากรหัสนี้");
-      } catch (error) {
-        console.error(error);
-        setLoading(false);
-        setStage(null);
-        setSheetOpen(true);
-        toast.error("ค้นหาไม่สำเร็จ");
-      } finally {
-        setLoading(false);
-        setStage(null);
-        handlingRef.current = false;
-      }
-    },
-    [applyIdentify, autoMode],
-  );
+  const toggleTorch = useCallback(async () => {
+    const track = getVideoTrack();
+    if (!track) {
+      toast.error("กล้องยังไม่พร้อมสำหรับแฟลช");
+      return;
+    }
+    const next = !torchOn;
+    try {
+      await track.applyConstraints({
+        advanced: [{ torch: next }],
+      } as unknown as MediaTrackConstraints);
+      setTorchOn(next);
+    } catch {
+      setTorchAvailable(false);
+      toast.error("เครื่องนี้เปิดแฟลชผ่านเบราว์เซอร์ไม่ได้");
+    }
+  }, [getVideoTrack, torchOn]);
 
   const startScanner = useCallback(async () => {
     if (startingRef.current || scanning) return;
@@ -603,14 +587,16 @@ export default function ScanPage() {
             return { width: edge, height: edge };
           },
         },
-        (decodedText) => {
-          void handleDecoded(decodedText);
+        () => {
+          // ปิดการอ่าน QR: หน้านี้ใช้ตรวจจับใบปะหน้าและถ่ายรูปเองเท่านั้น
         },
         () => {
-          // ไม่ต้องแจ้ง error ทุกเฟรมที่ยังไม่พบรหัส
+          // ไม่ต้องแจ้ง error ทุกเฟรม
         },
       );
       setScanning(true);
+      // ให้วิดีโอเริ่มเล่นก่อนแล้วค่อยตรวจว่าเครื่องนี้มีแฟลชไหม
+      window.setTimeout(detectTorch, 600);
     } catch (error) {
       console.error(error);
       setCameraError(cameraErrorMessage(error));
@@ -620,23 +606,11 @@ export default function ScanPage() {
       startingRef.current = false;
       setStarting(false);
     }
-  }, [handleDecoded, scanning]);
-
-  const toggleAuto = useCallback(() => {
-    setAutoMode((current) => {
-      const next = !current;
-      try {
-        window.localStorage.setItem(AUTO_SCAN_KEY, next ? "1" : "0");
-      } catch {
-        // เก็บไม่ได้ก็ยังใช้ในรอบนี้ได้
-      }
-      if (next && !scanning && !startingRef.current) void startScanner();
-      return next;
-    });
-  }, [scanning, startScanner]);
+  }, [scanning, detectTorch]);
 
   const scanAgain = useCallback(async () => {
     setSheetOpen(false);
+    cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
     setResult(null);
     setPrimaryMatch(null);
     setLastCode("");
@@ -771,22 +745,20 @@ export default function ScanPage() {
         ? await addHouseToNavigation(result, form.tracking.trim() || null)
         : await addDraftToNavigation(form);
       if (ok) {
-        // เพิ่มเสร็จ → ปิดหน้าผลสแกนทันที (โหมดอัตโนมัติจะกลับไปสแกนชิ้นถัดไปเอง)
+        // เพิ่มเสร็จ → ปิดหน้าผลสแกนทันที แล้วกลับไปสแกนชิ้นถัดไปต่อ
         setSheetOpen(false);
         cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
         setAutoStatus("idle");
-        if (autoMode) {
-          // กล้องอาจถูก pause ตอนอ่าน QR — เปิดต่อเพื่อสแกนชิ้นถัดไป
-          try {
-            scannerRef.current?.resume();
-          } catch {
-            // resume ไม่ได้ก็ปล่อยให้ผู้ใช้กดเปิดกล้องเอง
-          }
+        // กันกรณีกล้องถูก pause ไว้ — เปิดต่อเพื่อจ่อใบถัดไป
+        try {
+          scannerRef.current?.resume();
+        } catch {
+          // resume ไม่ได้ก็ปล่อยให้ผู้ใช้กดเปิดกล้องเอง
         }
       }
       return ok;
     },
-    [result, addHouseToNavigation, addDraftToNavigation, autoMode],
+    [result, addHouseToNavigation, addDraftToNavigation],
   );
 
   /** บันทึกข้อมูล: มีบ้านอยู่แล้ว = แก้ไขบ้านหลังนั้น, ยังไม่มี = สร้างบ้านใหม่ */
@@ -906,15 +878,21 @@ export default function ScanPage() {
     match: primaryMatch,
   };
 
+  /** ปิดชีตเอง → เว้นช่วงสั้น ๆ กันสแกนใบเดิมซ้ำทันที */
+  const closeSheet = useCallback(() => {
+    setSheetOpen(false);
+    cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
+  }, []);
+
   return (
     <div className="page-shell mx-auto max-w-xl px-4 py-6 pb-32 sm:py-8 md:pb-8">
       <div className="mb-5">
         <h1 className="page-title">
-          <QrCode className="h-7 w-7 text-teal-700" aria-hidden="true" />
-          สแกน QR / บาร์โค้ด
+          <ScanText className="h-7 w-7 text-teal-700" aria-hidden="true" />
+          สแกนใบปะหน้า
         </h1>
         <p className="mt-2 text-sm font-medium text-gray-600">
-          สแกนรหัสบนบ้านหรือกล่องเพื่อหาชื่อ เบอร์ ที่อยู่ แล้วนำทางได้ทันที
+          เปิดกล้องแล้วจ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เองทีละใบ
         </p>
       </div>
 
@@ -927,11 +905,33 @@ export default function ScanPage() {
 
           {!scanning && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-white/80">
-              <QrCode className="h-12 w-12" aria-hidden="true" />
+              <ScanText className="h-12 w-12" aria-hidden="true" />
               <p className="text-sm font-medium">
-                {starting ? "กำลังเปิดกล้อง..." : "กดปุ่มด้านล่างเพื่อเปิดกล้องสแกน"}
+                {starting
+                  ? "กำลังเปิดกล้อง..."
+                  : "กดเปิดกล้อง แล้วจ่อใบปะหน้าให้อยู่ในกรอบ"}
               </p>
             </div>
+          )}
+
+          {scanning && torchAvailable && (
+            <button
+              type="button"
+              onClick={() => void toggleTorch()}
+              aria-pressed={torchOn}
+              aria-label={torchOn ? "ปิดแฟลช" : "เปิดแฟลช"}
+              className={`absolute left-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-full border shadow-md transition-colors ${
+                torchOn
+                  ? "border-amber-300 bg-amber-400 text-amber-950"
+                  : "border-white/30 bg-black/45 text-white"
+              }`}
+            >
+              {torchOn ? (
+                <Zap className="h-5 w-5" aria-hidden="true" />
+              ) : (
+                <ZapOff className="h-5 w-5" aria-hidden="true" />
+              )}
+            </button>
           )}
 
           {starting && (
@@ -980,74 +980,43 @@ export default function ScanPage() {
               if (file) void scanPhoto(file);
             }}
           />
-          <div className="mt-2 flex items-stretch gap-2">
-            <button
-              type="button"
-              onClick={() => photoInputRef.current?.click()}
-              disabled={loading}
-              className="btn btn-secondary min-w-0 flex-1"
-            >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <ScanText className="h-4 w-4" aria-hidden="true" />
-              )}
-              <span className="truncate">
-                {loading ? "กำลังทำงาน..." : "ถ่ายรูปฉลากพัสดุ"}
-              </span>
-            </button>
+          <button
+            type="button"
+            onClick={() => photoInputRef.current?.click()}
+            disabled={loading}
+            className="btn btn-secondary mt-2 w-full"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <ScanText className="h-4 w-4" aria-hidden="true" />
+            )}
+            <span className="truncate">
+              {loading ? "กำลังทำงาน..." : "ถ่ายรูปเอง (สำรอง)"}
+            </span>
+          </button>
 
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoMode}
-              aria-label="สแกนอัตโนมัติ (ออโต้)"
-              onClick={toggleAuto}
-              className={`flex min-h-11 flex-none items-center gap-2 rounded-full border px-3 text-xs font-bold transition-colors ${
-                autoMode
-                  ? "border-teal-600 bg-teal-50 text-teal-800"
-                  : "border-gray-200 bg-white text-gray-600"
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-2 flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2 text-[11px] font-medium text-teal-900"
+          >
+            <span
+              className={`h-2 w-2 flex-none rounded-full ${
+                autoStatus === "holding" || autoStatus === "capturing"
+                  ? "animate-pulse bg-teal-600"
+                  : "bg-teal-400"
               }`}
-            >
-              <span
-                className={`relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors ${
-                  autoMode ? "bg-teal-600" : "bg-gray-300"
-                }`}
-                aria-hidden="true"
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                    autoMode ? "translate-x-[22px]" : "translate-x-0.5"
-                  }`}
-                />
-              </span>
-              ออโต้
-            </button>
+              aria-hidden="true"
+            />
+            {!scanning
+              ? "กด “เปิดกล้องสแกน” เพื่อเริ่มจับใบปะหน้า"
+              : autoStatus === "holding"
+                ? "ถือไว้อีกนิด ระบบกำลังจะถ่ายให้เอง…"
+                : autoStatus === "capturing"
+                  ? "กำลังอ่านฉลาก…"
+                  : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
           </div>
-
-          {autoMode && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="mt-2 flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2 text-[11px] font-medium text-teal-900"
-            >
-              <span
-                className={`h-2 w-2 flex-none rounded-full ${
-                  autoStatus === "holding" || autoStatus === "capturing"
-                    ? "animate-pulse bg-teal-600"
-                    : "bg-teal-400"
-                }`}
-                aria-hidden="true"
-              />
-              {!scanning
-                ? "ออโต้เปิดอยู่ — กด “เปิดกล้องสแกน” เพื่อเริ่มสแกนต่อเนื่อง"
-                : autoStatus === "holding"
-                  ? "ถือไว้อีกนิด ระบบกำลังจะถ่ายให้เอง…"
-                  : autoStatus === "capturing"
-                    ? "กำลังอ่านฉลาก…"
-                    : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
-            </div>
-          )}
 
           {cameraError && (
             <div
@@ -1116,7 +1085,7 @@ export default function ScanPage() {
         sameParcel={sameParcel}
         busy={adding}
         added={added}
-        onClose={() => setSheetOpen(false)}
+        onClose={closeSheet}
         onAdd={addPrimary}
         onSave={savePrimary}
         onSelectCandidate={selectCandidate}
