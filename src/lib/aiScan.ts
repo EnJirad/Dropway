@@ -55,6 +55,27 @@ type LabelResponse = {
 };
 
 /**
+ * เช็คว่าเซิร์ฟเวอร์มี key ที่บันทึกไว้ในฐานข้อมูลหรือไม่ (ไม่คืนค่าตัว key)
+ * ใช้ตอนผู้ใช้เพิ่งเปิดแท็บใหม่: key ในหน่วยความจำหาย แต่สแกนได้ทันทีด้วย key ที่บันทึกไว้
+ */
+export async function hasServerAiKey(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const res = await fetch("/api/settings/ai", { cache: "no-store", signal: controller.signal });
+      if (!res.ok) return false;
+      const json = (await res.json()) as { hasKey?: unknown };
+      return json.hasKey === true;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
  * ส่งรูปฉลากให้ AI ตามค่าตั้งค่า ฟังก์ชันนี้ไม่ throw: ถ้า AI ใช้ไม่ได้จะคืน { ok: false }
  * เพื่อให้หน้าสแกนเก็บผล OCR ไว้และให้ผู้ใช้แก้ข้อมูลต่อได้
  */

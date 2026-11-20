@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_MODELS, PROVIDER_IDS, type AiProvider } from "@/lib/aiSettings";
 import { ProviderError, providerErrorFromHttp, resolveRetryConfig } from "@/lib/aiRetry";
 import { buildKeySlots, isKeyProblem } from "@/lib/aiKeys";
+import { getStoredAiKeys } from "@/lib/aiSettingsDb";
 import { runWithResilience, type ResilienceResult } from "@/lib/aiResilience";
 import { LABEL_JSON_SCHEMA, LABEL_PROMPT, buildFocusPrompt } from "@/lib/labelPrompt";
 import type { LabelFields } from "@/lib/labelParse";
@@ -224,8 +225,25 @@ export async function POST(request: NextRequest) {
     if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
       return NextResponse.json({ error: "ผู้ให้บริการ AI ไม่ถูกต้อง" }, { status: 400 });
     }
-    if (!apiKey) {
-      return NextResponse.json({ error: "ยังไม่ได้ใส่ API key" }, { status: 400 });
+
+    // ถ้าเบราว์เซอร์ไม่ได้ส่ง key มา ให้ใช้ key ที่บันทึกไว้ในฐานข้อมูล
+    // (ผู้ใช้กรอกครั้งเดียวในหน้าตั้งค่าแล้วสแกนได้ทันทีโดยไม่ต้องกรอกซ้ำ)
+    let resolvedKey = apiKey;
+    let resolvedBackup = backupApiKey;
+    if (!resolvedKey || !resolvedBackup) {
+      try {
+        const stored = await getStoredAiKeys();
+        if (!resolvedKey) resolvedKey = stored.primary;
+        if (!resolvedBackup) resolvedBackup = stored.backup;
+      } catch {
+        // ฐานข้อมูลไม่พร้อม — ใช้เฉพาะ key ที่ส่งมาจากเบราว์เซอร์
+      }
+    }
+    if (!resolvedKey) {
+      return NextResponse.json(
+        { error: "ยังไม่มี API key — กรอกในหน้าตั้งค่าแล้วกดบันทึกก่อน" },
+        { status: 400 },
+      );
     }
     if (!/^image\/(jpeg|png|webp)$/.test(mime)) {
       return NextResponse.json({ error: "ชนิดรูปไม่รองรับ" }, { status: 400 });
@@ -241,7 +259,7 @@ export async function POST(request: NextRequest) {
     const config = resolveRetryConfig({ maxAttempts: body.maxAttempts, timeoutMs: body.timeoutMs });
 
     // ลำดับ key: หลักก่อน แล้วค่อยสำรอง — สลับเมื่อ key หลักติดโควตาหรือสิทธิ์
-    const keys = buildKeySlots(apiKey, backupApiKey);
+    const keys = buildKeySlots(resolvedKey, resolvedBackup);
     if (!keys.length) {
       return NextResponse.json({ error: "ยังไม่ได้ใส่ API key" }, { status: 400 });
     }

@@ -34,6 +34,7 @@ import {
   type ImageMaxSide,
 } from "@/lib/aiSettings";
 import { listProviderModels, type AiModelInfo } from "@/lib/aiModels";
+import { clearVault } from "@/lib/keyVault";
 
 /** ชุดค่าความเร็ว: จำนวนครั้งที่ลองใหม่ + เวลารอต่อครั้ง (วินาที) */
 const SPEED_PRESETS = [
@@ -43,6 +44,45 @@ const SPEED_PRESETS = [
 ] as const;
 
 type ModelState = "idle" | "loading" | "ok" | "error";
+
+type RemoteState = {
+  dbReady: boolean;
+  encryptionReady: boolean;
+  hasKey: boolean;
+  hasBackup: boolean;
+  hint: string;
+  backupHint: string;
+  updatedAt: string | null;
+};
+
+/** snapshot ใช้เทียบว่ามีการแก้ไขหรือยัง (ปุ่มบันทึกจะ enabled เฉพาะตอน dirty) */
+function snapshotOf(s: AppSettings): string {
+  return JSON.stringify(s);
+}
+
+/** รวมค่าที่บันทึกไว้ในฐานข้อมูลเข้ากับค่าที่มีในเครื่อง (ไม่แตะ key) */
+function applyRemote(local: AppSettings, remote: unknown): AppSettings {
+  if (!remote || typeof remote !== "object") return local;
+  const r = remote as Record<string, unknown>;
+  const next: AppSettings = { ...local, apiKeys: { ...local.apiKeys }, backupApiKeys: { ...local.backupApiKeys }, models: { ...local.models }, fallbackModels: { ...local.fallbackModels } };
+  if (r.scanMode === "ai" || r.scanMode === "ocr") next.scanMode = r.scanMode;
+  if (PROVIDERS.some((p) => p.id === r.provider)) next.provider = r.provider as AiProvider;
+  if (typeof r.fallbackToOcr === "boolean") next.fallbackToOcr = r.fallbackToOcr;
+  if ((IMAGE_SIDES as readonly number[]).includes(r.imageMaxSide as number)) {
+    next.imageMaxSide = r.imageMaxSide as ImageMaxSide;
+  }
+  if ([1, 2, 3, 4].includes(r.aiMaxAttempts as number)) next.aiMaxAttempts = r.aiMaxAttempts as number;
+  if ([10, 15, 20, 30].includes(r.aiTimeoutSec as number)) next.aiTimeoutSec = r.aiTimeoutSec as number;
+  const remoteModels = (r.models ?? {}) as Record<string, unknown>;
+  const remoteFallback = (r.fallbackModels ?? {}) as Record<string, unknown>;
+  for (const p of PROVIDERS) {
+    const m = remoteModels[p.id];
+    if (typeof m === "string" && m.trim()) next.models[p.id] = m.trim();
+    const fb = remoteFallback[p.id];
+    if (typeof fb === "string") next.fallbackModels[p.id] = fb.trim();
+  }
+  return next;
+}
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
@@ -56,9 +96,52 @@ export default function SettingsPage() {
   const [modelError, setModelError] = useState("");
   const requestRef = useRef(0);
 
+  /** สถานะค่าที่บันทึกในฐานข้อมูล (ไม่รวม key) */
+  const [remote, setRemote] = useState<RemoteState | null>(null);
+  const [remoteError, setRemoteError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [baseline, setBaseline] = useState<string | null>(null);
+  const [keyDirty, setKeyDirty] = useState(false);
+  const [backupDirty, setBackupDirty] = useState(false);
+
   useEffect(() => {
-    setSettings(loadSettings());
+    let cancelled = false;
+    const local = loadSettings();
+    setSettings(local);
     setLoaded(true);
+    setBaseline(snapshotOf(local));
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/settings/ai", { cache: "no-store" });
+        const json = (await res.json().catch(() => null)) as
+          | (Partial<RemoteState> & { error?: string; settings?: unknown })
+          | null;
+        if (cancelled) return;
+        if (!res.ok) {
+          setRemoteError(json?.error || `โหลดค่าที่บันทึกไว้ไม่ได้ (HTTP ${res.status})`);
+          return;
+        }
+        const merged = applyRemote(local, json?.settings);
+        setSettings(merged);
+        setBaseline(snapshotOf(merged));
+        setRemote({
+          dbReady: true,
+          encryptionReady: json?.encryptionReady === true,
+          hasKey: json?.hasKey === true,
+          hasBackup: json?.hasBackup === true,
+          hint: typeof json?.hint === "string" ? json.hint : "",
+          backupHint: typeof json?.backupHint === "string" ? json.backupHint : "",
+          updatedAt: typeof json?.updatedAt === "string" ? json.updatedAt : null,
+        });
+      } catch {
+        if (!cancelled) setRemoteError("เชื่อมต่อฐานข้อมูลไม่ได้ — ใช้ค่าที่บันทึกในเครื่องนี้ก่อน");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const info = PROVIDERS.find((p) => p.id === settings.provider) ?? PROVIDERS[0];
@@ -90,6 +173,7 @@ export default function SettingsPage() {
 
   /** วาง key แล้วเดาเจ้าของให้เอง แล้วสลับไปเจ้านั้นทันที */
   const onKeyChange = (value: string) => {
+    setKeyDirty(true);
     const target = detectProvider(value);
     if (target && target !== settings.provider) {
       setUseCustomModel(false);
@@ -153,9 +237,12 @@ export default function SettingsPage() {
     return found ? found.id : "";
   }, [settings.aiMaxAttempts, settings.aiTimeoutSec]);
 
-  const save = () => {
-    if (settings.scanMode === "ai" && !key.trim()) {
-      toast.error(`ใส่ API key ของ ${info.name} ก่อนเปิดโหมด AI`);
+  /** มีการแก้ไขที่ยังไม่บันทึกหรือไม่ (คุมการ enable ปุ่มบันทึก) */
+  const dirty = loaded && baseline !== null && snapshotOf(settings) !== baseline;
+
+  const save = async () => {
+    if (settings.scanMode === "ai" && !key.trim() && !remote?.hasKey) {
+      toast.error(`ใส่ API key ของ ${info.name} หรือบันทึก key ไว้ในฐานข้อมูลก่อน`);
       return;
     }
     const trimmedBackup = backupKey.trim();
@@ -175,15 +262,69 @@ export default function SettingsPage() {
         [settings.provider]: model.trim() || DEFAULT_MODELS[settings.provider],
       },
     };
-    if (saveSettings(next)) {
+    setSaving(true);
+    try {
+      const payload: Record<string, unknown> = {
+        settings: {
+          scanMode: next.scanMode,
+          provider: next.provider,
+          fallbackToOcr: next.fallbackToOcr,
+          imageMaxSide: next.imageMaxSide,
+          aiMaxAttempts: next.aiMaxAttempts,
+          aiTimeoutSec: next.aiTimeoutSec,
+          models: next.models,
+          fallbackModels: next.fallbackModels,
+        },
+      };
+      // ส่ง key เฉพาะเมื่อผู้ใช้แก้ช่องนี้ในรอบนี้ — ไม่ส่งค่าว่างไปทับของเดิมในฐานข้อมูล
+      if (keyDirty) payload.apiKey = key.trim();
+      if (backupDirty) payload.backupKey = trimmedBackup;
+
+      const res = await fetch("/api/settings/ai", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(payload),
+      });
+      const json = (await res.json().catch(() => null)) as
+        | (Partial<RemoteState> & { error?: string })
+        | null;
+
+      const localOk = saveSettings(next);
       setSettings(next);
-      toast.success("บันทึกแล้ว — key อยู่ในแท็บนี้เท่านั้น ปิดแท็บต้องกรอกใหม่");
-    } else {
-      toast.error("บันทึกไม่ได้ เบราว์เซอร์ไม่อนุญาตให้เก็บข้อมูล");
+
+      if (!res.ok) {
+        // ฐานข้อมูล/secret ยังไม่พร้อม — ไม่ให้งานหาย เก็บค่าที่เครื่องไว้ แต่คงสถานะ "ยังไม่บันทึก"
+        setRemoteError(json?.error || "บันทึกในฐานข้อมูลไม่ได้");
+        toast.error(json?.error || "บันทึกในฐานข้อมูลไม่ได้ — เก็บไว้ในเครื่องนี้แทน");
+        if (!localOk) toast.error("เครื่องนี้ไม่อนุญาตให้เก็บค่าตั้งค่า");
+        return;
+      }
+
+      setBaseline(snapshotOf(next));
+      setKeyDirty(false);
+      setBackupDirty(false);
+      setRemote({
+        dbReady: true,
+        encryptionReady: json?.encryptionReady === true,
+        hasKey: json?.hasKey === true,
+        hasBackup: json?.hasBackup === true,
+        hint: typeof json?.hint === "string" ? json.hint : "",
+        backupHint: typeof json?.backupHint === "string" ? json.backupHint : "",
+        updatedAt: typeof json?.updatedAt === "string" ? json.updatedAt : null,
+      });
+      setRemoteError("");
+      toast.success("บันทึกแล้ว — พร้อมใช้สแกนทันที");
+    } catch {
+      saveSettings(next);
+      setSettings(next);
+      toast.error("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ — เก็บค่าที่เครื่องนี้แทน (ยังไม่ได้บันทึกที่ฐานข้อมูล)");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const clearKey = () => {
+  const clearKey = async () => {
     requestRef.current += 1;
     setModels([]);
     setModelState("idle");
@@ -192,10 +333,25 @@ export default function SettingsPage() {
       apiKeys: { ...settings.apiKeys, [settings.provider]: "" },
       backupApiKeys: { ...settings.backupApiKeys, [settings.provider]: "" },
     };
+    clearVault();
     setSettings(cleared);
-    // ล้างในหน่วยความจำทันที ไม่รอให้กดบันทึก
     saveSettings(cleared);
-    toast.success("ล้าง key หลักและ key สำรองออกจากหน่วยความจำแล้ว");
+    setBaseline(snapshotOf(cleared));
+    setKeyDirty(false);
+    setBackupDirty(false);
+    try {
+      const res = await fetch("/api/settings/ai", { method: "DELETE", cache: "no-store" });
+      if (!res.ok) {
+        toast.error("ล้าง key ในเครื่องแล้ว แต่ลบในฐานข้อมูลไม่สำเร็จ");
+        return;
+      }
+      setRemote((prev) =>
+        prev ? { ...prev, hasKey: false, hasBackup: false, hint: "", backupHint: "" } : prev,
+      );
+      toast.success("ล้าง key แล้วทั้งในเครื่องและฐานข้อมูล");
+    } catch {
+      toast.success("ล้าง key ในเครื่องแล้ว (ลบในฐานข้อมูลไม่สำเร็จ ตรวจการเชื่อมต่อ)");
+    }
   };
 
   return (
@@ -309,9 +465,46 @@ export default function SettingsPage() {
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-teal-200 bg-teal-50 p-3 text-[11px] leading-relaxed text-teal-900">
           <ShieldCheck className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
           <span>
-            key ไม่ถูกบันทึกที่ไหน — เก็บเฉพาะในหน่วยความจำของแท็บนี้ ปิดแท็บ/รีเฟรช
-            ต้องกรอกใหม่. เว็บไซต์และเซิร์ฟเวอร์ไม่มี key ของผู้ใช้คนไหนเก็บไว้
+            key ถูกเข้ารหัสก่อนเก็บในฐานข้อมูลของเรา — ฝั่งเบราว์เซอร์เก็บเฉพาะในหน่วยความจำของแท็บนี้
+            และไม่มี key ฝังในโค้ดหรือไฟล์ที่ build ขึ้นเว็บ
           </span>
+        </div>
+
+        <div className="mt-2 space-y-1 text-[11px] leading-relaxed">
+          {remoteError ? (
+            <p className="flex items-start gap-1 text-amber-700">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-none" aria-hidden="true" />
+              <span>{remoteError}</span>
+            </p>
+          ) : remote ? (
+            <p className="flex items-start gap-1 text-gray-600">
+              <CheckCircle2
+                className="mt-0.5 h-3.5 w-3.5 flex-none text-teal-700"
+                aria-hidden="true"
+              />
+              <span>
+                {remote.hasKey
+                  ? `key หลักบันทึกในฐานข้อมูลแล้ว ${remote.hint}${
+                      remote.updatedAt
+                        ? ` · ${new Date(remote.updatedAt).toLocaleString("th-TH")}`
+                        : ""
+                    }`
+                  : "ยังไม่มี key ในฐานข้อมูล — กรอกแล้วกดบันทึกครั้งเดียว ใช้ได้ทุกครั้งถัดไป"}
+                {remote.hasBackup ? " · มี key สำรองในฐานข้อมูล" : ""}
+              </span>
+            </p>
+          ) : (
+            <p className="text-gray-500">กำลังโหลดค่าที่บันทึกไว้…</p>
+          )}
+          {remote && !remote.encryptionReady && (
+            <p className="flex items-start gap-1 text-amber-700">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-none" aria-hidden="true" />
+              <span>
+                ยังไม่ได้ตั้ง AI_KEYS_SECRET บนเซิร์ฟเวอร์ — เก็บ key ลงฐานข้อมูลไม่ได้
+                (ใช้ได้เฉพาะในแท็บนี้)
+              </span>
+            </p>
+          )}
         </div>
 
         {/* API key + ตรวจเจ้าของ */}
@@ -365,7 +558,10 @@ export default function SettingsPage() {
             <input
               type={showBackupKey ? "text" : "password"}
               value={backupKey}
-              onChange={(event) => setBackupKeyFor(settings.provider, event.target.value)}
+              onChange={(event) => {
+                setBackupDirty(true);
+                setBackupKeyFor(settings.provider, event.target.value);
+              }}
               placeholder={`key อีกอันของ ${info.name} (${info.keyPrefix})`}
               autoComplete="off"
               spellCheck={false}
@@ -595,7 +791,7 @@ export default function SettingsPage() {
           ความเป็นส่วนตัวและอื่น ๆ
         </h2>
         <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-gray-600">
-          <li>API key ไม่ถูกบันทึกในเว็บ เซิร์ฟเวอร์ หรือฐานข้อมูล — เก็บในหน่วยความจำของแท็บนี้เท่านั้น และส่งต่อให้ผู้ให้บริการ AI ครั้งต่อคำขอ</li>
+          <li>API key ถูกเข้ารหัส (AES-256-GCM) ก่อนเก็บในฐานข้อมูล — เบราว์เซอร์ไม่เคยได้รับ key กลับ และไม่มี key ฝังในโค้ด</li>
           <li>ตอนสแกน รูปและ key จะส่งผ่านเซิร์ฟเวอร์ของแอปไปยังผู้ให้บริการ AI ที่เลือก เซิร์ฟเวอร์ไม่เก็บไว้</li>
           <li>รูปฉลากมีชื่อและที่อยู่ลูกค้า ตรวจเงื่อนไขการใช้ข้อมูลของผู้ให้บริการก่อนใช้งานจริง</li>
           <li>อย่าใช้ key ร่วมกับเครื่องสาธารณะ และตั้งวงเงินใช้จ่ายที่เว็บผู้ให้บริการไว้</li>
@@ -603,11 +799,25 @@ export default function SettingsPage() {
       </section>
 
       <div className="mt-4 flex gap-2">
-        <button type="button" onClick={save} className="btn btn-primary flex-1">
-          <Save className="h-4 w-4" aria-hidden="true" />
-          บันทึก
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={!dirty || saving}
+          className="btn btn-primary flex-1 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Save className="h-4 w-4" aria-hidden="true" />
+          )}
+          {saving ? "กำลังบันทึก…" : dirty ? "บันทึก" : "บันทึกแล้ว"}
         </button>
-        <button type="button" onClick={clearKey} disabled={!key} className="btn btn-secondary">
+        <button
+          type="button"
+          onClick={() => void clearKey()}
+          disabled={!key && !remote?.hasKey}
+          className="btn btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
+        >
           <Trash2 className="h-4 w-4" aria-hidden="true" />
           ล้าง key
         </button>
