@@ -23,6 +23,8 @@ import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
 import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
 import { composeAddress, parseLabel, type LabelFields } from "@/lib/labelParse";
+import { isAiReady, loadSettings } from "@/lib/aiSettings";
+import { fieldsToText, readLabelWithAi } from "@/lib/aiScan";
 
 const DRAFT_FIELDS: { key: keyof LabelFields; label: string }[] = [
   { key: "name", label: "ชื่อผู้รับ" },
@@ -267,14 +269,38 @@ export default function ScanPage() {
       setNotFound(false);
       setAdded(false);
       try {
-        const { createWorker } = await import("tesseract.js");
-        const worker = await createWorker(["tha", "eng"]);
         let text = "";
-        try {
-          const out = await worker.recognize(file);
-          text = out.data.text;
-        } finally {
-          await worker.terminate();
+        let aiFields: LabelFields | null = null;
+
+        // โหมด AI (ตั้งค่าในหน้า "ตั้งค่า") ถ้าไม่สำเร็จและเปิดตัวเลือกสำรอง ให้ใช้ OCR ต่อ
+        const settings = loadSettings();
+        if (isAiReady(settings)) {
+          try {
+            const fields = await readLabelWithAi(file, settings);
+            const aiText = fieldsToText(fields);
+            if (!aiText.trim()) throw new Error("AI อ่านข้อมูลจากรูปไม่ได้");
+            aiFields = fields;
+            text = aiText;
+          } catch (aiError) {
+            const message = aiError instanceof Error ? aiError.message : "เรียก AI ไม่สำเร็จ";
+            if (!settings.fallbackToOcr) {
+              setNotFound(true);
+              toast.error(message);
+              return;
+            }
+            toast.error(`${message} ใช้ OCR แทน`);
+          }
+        }
+
+        if (!aiFields) {
+          const { createWorker } = await import("tesseract.js");
+          const worker = await createWorker(["tha", "eng"]);
+          try {
+            const out = await worker.recognize(file);
+            text = out.data.text;
+          } finally {
+            await worker.terminate();
+          }
         }
         if (!text.trim()) {
           setNotFound(true);
@@ -282,7 +308,7 @@ export default function ScanPage() {
           return;
         }
         setLastCode(text.replace(/\s+/g, " ").trim().slice(0, 200));
-        setDraft(parseLabel(text));
+        setDraft(aiFields ?? parseLabel(text));
         const found = await applyIdentify(text);
         if (found) {
           toast.success("พบบ้านแล้ว");

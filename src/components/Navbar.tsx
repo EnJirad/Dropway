@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
-import { Menu, X, LogOut, Warehouse, MapPinned, ScanLine } from "lucide-react";
+import { Menu, X, LogOut, Warehouse, MapPinned, ScanLine, Settings } from "lucide-react";
 
 interface AppUser {
   id: string;
@@ -134,6 +134,7 @@ export default function Navbar() {
     if (pathname === "/houses") return "คลังบ้าน";
     if (pathname === "/navigation") return "นำทาง";
     if (pathname === "/scan") return "สแกน QR";
+    if (pathname === "/settings") return "ตั้งค่า";
     if (pathname === "/login") return "เข้าสู่ระบบ";
     if (pathname === "/register") return "สมัครสมาชิก";
     return "DropWay";
@@ -229,10 +230,24 @@ export default function Navbar() {
         </div>
 
         {user && (
-          <button type="button" onClick={logout} className="btn btn-danger">
-            <LogOut className="w-4 h-4" aria-hidden="true" />
-            <span>ออกจากระบบ</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/settings"
+              aria-current={isActive("/settings") ? "page" : undefined}
+              className={`flex items-center gap-1.5 text-base font-medium transition-colors ${
+                isActive("/settings")
+                  ? "text-teal-700"
+                  : "text-gray-500 hover:text-teal-700"
+              }`}
+            >
+              <Settings className="h-4 w-4" aria-hidden="true" />
+              ตั้งค่า
+            </Link>
+            <button type="button" onClick={logout} className="btn btn-danger">
+              <LogOut className="w-4 h-4" aria-hidden="true" />
+              <span>ออกจากระบบ</span>
+            </button>
+          </div>
         )}
       </nav>
 
@@ -339,6 +354,20 @@ export default function Navbar() {
                   </Link>
                 );
               })}
+
+              <Link
+                href="/settings"
+                onClick={closeMenu}
+                aria-current={isActive("/settings") ? "page" : undefined}
+                className={`flex min-h-[48px] items-center gap-3 rounded-xl px-3 text-base font-medium transition-colors zoom-pinch-ok ${
+                  isActive("/settings")
+                    ? "bg-teal-50 text-teal-700"
+                    : "text-gray-700 hover:bg-gray-50 hover:text-teal-700"
+                }`}
+              >
+                <Settings className="h-6 w-6 text-teal-700" aria-hidden="true" />
+                ตั้งค่า
+              </Link>
 
               <div className="pt-2">
                 <div className="border-t border-gray-200/90" aria-hidden="true" />
