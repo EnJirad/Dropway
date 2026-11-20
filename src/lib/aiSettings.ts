@@ -1,3 +1,5 @@
+import { readProviderKeys, writeProviderKeys } from "@/lib/keyVault";
+
 export const PROVIDER_IDS = ["gemini", "openai", "anthropic"] as const;
 export type AiProvider = (typeof PROVIDER_IDS)[number];
 
@@ -109,9 +111,19 @@ function isProvider(v: unknown): v is AiProvider {
   return typeof v === "string" && (PROVIDER_IDS as readonly string[]).includes(v);
 }
 
+/** ค่าตั้งค่าที่ปลอดภัยต่อการเก็บลง storage (ไม่มี key) */
+function withoutKeys(s: AppSettings): AppSettings {
+  return {
+    ...s,
+    apiKeys: { gemini: "", openai: "", anthropic: "" },
+    backupApiKeys: { gemini: "", openai: "", anthropic: "" },
+  };
+}
+
 /** อ่านค่าตั้งค่าจากเบราว์เซอร์ (ถ้าอ่านไม่ได้หรือข้อมูลเสีย ใช้ค่าเริ่มต้น) */
 export function loadSettings(): AppSettings {
   const base = defaultSettings();
+  let migrated = false;
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
     if (!raw) return base;
@@ -130,10 +142,21 @@ export function loadSettings(): AppSettings {
       base.imageMaxSide = p.imageMaxSide as ImageMaxSide;
     }
     for (const id of PROVIDER_IDS) {
-      const key = p.apiKeys?.[id];
-      if (typeof key === "string") base.apiKeys[id] = key;
-      const backupKey = p.backupApiKeys?.[id];
-      if (typeof backupKey === "string") base.backupApiKeys[id] = backupKey;
+      // key ไม่ถูกอ่าน/เขียนลง storage อีกต่อไป — ของเก่าที่ค้างอยู่ย้ายเข้าหน่วยความจำแล้วลบทิ้ง
+      const legacyKey = typeof p.apiKeys?.[id] === "string" ? p.apiKeys[id] : "";
+      const legacyBackup =
+        typeof p.backupApiKeys?.[id] === "string" ? p.backupApiKeys[id] : "";
+      const held = readProviderKeys(id);
+      if ((legacyKey.trim() && !held.primary) || (legacyBackup.trim() && !held.backup)) {
+        writeProviderKeys(id, {
+          primary: held.primary || legacyKey,
+          backup: held.backup || legacyBackup,
+        });
+        migrated = true;
+      }
+      const current = readProviderKeys(id);
+      base.apiKeys[id] = current.primary;
+      base.backupApiKeys[id] = current.backup;
       const model = p.models?.[id];
       if (typeof model === "string" && model.trim()) base.models[id] = model.trim();
       const fallback = p.fallbackModels?.[id];
@@ -142,13 +165,28 @@ export function loadSettings(): AppSettings {
   } catch {
     // storage ถูกบล็อกหรือ JSON เสีย
   }
+  if (migrated) {
+    // ลบ key ที่ค้างใน storage รุ่นเก่าออกทันที
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(withoutKeys(base)));
+    } catch {
+      // เขียนไม่ได้ก็ไม่เป็นไร key ไม่ถูกอ่านจาก storage อยู่แล้ว
+    }
+  }
   return base;
 }
 
-/** บันทึกค่าตั้งค่า คืน false ถ้าเบราว์เซอร์ไม่ยอมให้เขียน */
+/** บันทึกค่าตั้งค่า: key เก็บในหน่วยความจำเท่านั้น ส่วนนี้เก็บเฉพาะค่าตั้งที่ไม่ลับ */
 export function saveSettings(settings: AppSettings): boolean {
+  for (const id of PROVIDER_IDS) {
+    writeProviderKeys(id, {
+      primary: settings.apiKeys[id] ?? "",
+      backup: settings.backupApiKeys[id] ?? "",
+    });
+  }
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    // ห้ามเขียน key ลง storage: ส่งเฉพาะค่าตั้งที่ไม่เป็นความลับ
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(withoutKeys(settings)));
     return true;
   } catch {
     return false;

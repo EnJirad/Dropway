@@ -71,12 +71,16 @@ export async function readLabelWithAi(file: File, settings: AppSettings): Promis
   try {
     const res = await fetch("/api/ai/label", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // key เดินทางไปกับ header ของคำขอนี้เท่านั้น ไม่ฝังใน body/log
+      headers: {
+        "Content-Type": "application/json",
+        "x-ai-key": settings.apiKeys[settings.provider] ?? "",
+        "x-ai-key-backup": settings.backupApiKeys[settings.provider] ?? "",
+      },
+      cache: "no-store",
       signal: controller.signal,
       body: JSON.stringify({
         provider: settings.provider,
-        apiKey: settings.apiKeys[settings.provider],
-        backupApiKey: settings.backupApiKeys[settings.provider] ?? "",
         model: settings.models[settings.provider],
         fallbackModel: settings.fallbackModels[settings.provider],
         maxAttempts: settings.aiMaxAttempts,

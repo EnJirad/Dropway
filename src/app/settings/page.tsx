@@ -177,7 +177,7 @@ export default function SettingsPage() {
     };
     if (saveSettings(next)) {
       setSettings(next);
-      toast.success("บันทึกการตั้งค่าแล้ว");
+      toast.success("บันทึกแล้ว — key อยู่ในแท็บนี้เท่านั้น ปิดแท็บต้องกรอกใหม่");
     } else {
       toast.error("บันทึกไม่ได้ เบราว์เซอร์ไม่อนุญาตให้เก็บข้อมูล");
     }
@@ -187,9 +187,15 @@ export default function SettingsPage() {
     requestRef.current += 1;
     setModels([]);
     setModelState("idle");
-    setKeyFor(settings.provider, "");
-    setBackupKeyFor(settings.provider, "");
-    toast.success("ล้าง key หลักและ key สำรองแล้ว กดบันทึกเพื่อยืนยัน");
+    const cleared: AppSettings = {
+      ...settings,
+      apiKeys: { ...settings.apiKeys, [settings.provider]: "" },
+      backupApiKeys: { ...settings.backupApiKeys, [settings.provider]: "" },
+    };
+    setSettings(cleared);
+    // ล้างในหน่วยความจำทันที ไม่รอให้กดบันทึก
+    saveSettings(cleared);
+    toast.success("ล้าง key หลักและ key สำรองออกจากหน่วยความจำแล้ว");
   };
 
   return (
@@ -300,6 +306,13 @@ export default function SettingsPage() {
         <p className="mt-1 text-xs text-gray-500">
           วาง API key แล้วระบบจะเดาเจ้าของ key ให้เอง และแสดงเฉพาะโมเดลที่ key นี้ใช้งานได้จริง
         </p>
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-teal-200 bg-teal-50 p-3 text-[11px] leading-relaxed text-teal-900">
+          <ShieldCheck className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+          <span>
+            key ไม่ถูกบันทึกที่ไหน — เก็บเฉพาะในหน่วยความจำของแท็บนี้ ปิดแท็บ/รีเฟรช
+            ต้องกรอกใหม่. เว็บไซต์และเซิร์ฟเวอร์ไม่มี key ของผู้ใช้คนไหนเก็บไว้
+          </span>
+        </div>
 
         {/* API key + ตรวจเจ้าของ */}
         <label className="mt-4 block text-xs font-medium text-gray-600">
@@ -582,7 +595,7 @@ export default function SettingsPage() {
           ความเป็นส่วนตัวและอื่น ๆ
         </h2>
         <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-gray-600">
-          <li>API key (ทั้ง key หลักและ key สำรอง) เก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ไม่ถูกบันทึกลงฐานข้อมูล</li>
+          <li>API key ไม่ถูกบันทึกในเว็บ เซิร์ฟเวอร์ หรือฐานข้อมูล — เก็บในหน่วยความจำของแท็บนี้เท่านั้น และส่งต่อให้ผู้ให้บริการ AI ครั้งต่อคำขอ</li>
           <li>ตอนสแกน รูปและ key จะส่งผ่านเซิร์ฟเวอร์ของแอปไปยังผู้ให้บริการ AI ที่เลือก เซิร์ฟเวอร์ไม่เก็บไว้</li>
           <li>รูปฉลากมีชื่อและที่อยู่ลูกค้า ตรวจเงื่อนไขการใช้ข้อมูลของผู้ให้บริการก่อนใช้งานจริง</li>
           <li>อย่าใช้ key ร่วมกับเครื่องสาธารณะ และตั้งวงเงินใช้จ่ายที่เว็บผู้ให้บริการไว้</li>

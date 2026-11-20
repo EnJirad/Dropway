@@ -204,8 +204,16 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const provider = body.provider as AiProvider;
-    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-    const backupApiKey = typeof body.backupApiKey === "string" ? body.backupApiKey.trim() : "";
+    // key มาจาก header เป็นหลัก (ไม่ปนใน JSON body ที่อาจถูก log โดย proxy)
+    // ยังอ่านจาก body ได้เพื่อความเข้ากันได้กับไคลเอนต์รุ่นเก่า
+    const headerKey = request.headers.get("x-ai-key");
+    const headerBackup = request.headers.get("x-ai-key-backup");
+    const apiKey =
+      (typeof headerKey === "string" && headerKey.trim()) ||
+      (typeof body.apiKey === "string" ? body.apiKey.trim() : "");
+    const backupApiKey =
+      (typeof headerBackup === "string" && headerBackup.trim()) ||
+      (typeof body.backupApiKey === "string" ? body.backupApiKey.trim() : "");
     const image = typeof body.image === "string" ? body.image : "";
     const mime = typeof body.mimeType === "string" ? body.mimeType : "image/jpeg";
     const model =
@@ -314,14 +322,17 @@ export async function POST(request: NextRequest) {
     }
 
     const finalFields = cleanFields(fields);
-    return NextResponse.json({
-      fields: finalFields,
-      model: modelUsed,
-      usedFallback,
-      usedBackupKey,
-      missing: criticalGaps(finalFields),
-      confidence,
-    });
+    return NextResponse.json(
+      {
+        fields: finalFields,
+        model: modelUsed,
+        usedFallback,
+        usedBackupKey,
+        missing: criticalGaps(finalFields),
+        confidence,
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     if (error instanceof ProviderError) {
       return NextResponse.json(
