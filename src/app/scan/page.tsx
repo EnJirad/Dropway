@@ -133,12 +133,24 @@ async function findHouseByCode(raw: string): Promise<House | null> {
   return null;
 }
 
+type SameParcelMeta = {
+  nav_id: string;
+  tracking_number: string | null;
+  created_at: string;
+  house_id: string | null;
+  delivery_status: string | null;
+  full_name: string | null;
+  address: string | null;
+};
+
 type IdentifyResult = {
   house: House | null;
   candidates: HouseMatch[];
   tracking: string | null;
   /** ข้อมูลการจับคู่ของผลหลัก (ใช้แสดงเหตุผลบนการ์ด) */
   match: HouseMatch | null;
+  /** มีเลขพัสดุนี้ในคิวแล้ว = พัสดุชิ้นเดียวกัน เพิ่มซ้ำไม่ได้ */
+  sameParcel: SameParcelMeta | null;
 };
 
 /**
@@ -151,10 +163,11 @@ async function identify(raw: string): Promise<IdentifyResult> {
 
   if (UUID_IN_TEXT.test(text)) {
     const house = await findHouseByCode(text);
-    if (house) return { house, candidates: [], tracking: null, match: null };
+    if (house) return { house, candidates: [], tracking: null, match: null, sameParcel: null };
   }
 
   let candidates: HouseMatch[] = [];
+  let sameParcel: SameParcelMeta | null = null;
   try {
     const res = await fetch("/api/houses/match", {
       method: "POST",
@@ -163,6 +176,9 @@ async function identify(raw: string): Promise<IdentifyResult> {
     });
     const json = await res.json();
     if (Array.isArray(json.candidates)) candidates = json.candidates;
+    if (json.existing_parcel && typeof json.existing_parcel === "object") {
+      sameParcel = json.existing_parcel as SameParcelMeta;
+    }
   } catch (err) {
     console.error("Match error:", err);
   }
@@ -174,15 +190,16 @@ async function identify(raw: string): Promise<IdentifyResult> {
       candidates: candidates.slice(1),
       tracking,
       match: top,
+      sameParcel,
     };
   }
 
   if (candidates.length === 0 && text.length <= 80 && !text.includes("\n")) {
     const house = await findHouseByCode(text);
-    if (house) return { house, candidates: [], tracking, match: null };
+    if (house) return { house, candidates: [], tracking, match: null, sameParcel };
   }
 
-  return { house: null, candidates, tracking, match: null };
+  return { house: null, candidates, tracking, match: null, sameParcel };
 }
 
 function cameraErrorMessage(error: unknown): string {
@@ -218,6 +235,8 @@ export default function ScanPage() {
   const [primaryMatch, setPrimaryMatch] = useState<HouseMatch | null>(null);
   const [candidates, setCandidates] = useState<HouseMatch[]>([]);
   const [tracking, setTracking] = useState<string | null>(null);
+  /** มีเลขพัสดุนี้ในคิวแล้ว (พัสดุชิ้นเดียวกัน) */
+  const [sameParcel, setSameParcel] = useState<SameParcelMeta | null>(null);
   const [draft, setDraft] = useState<LabelFields>(emptyFields());
   const [notice, setNotice] = useState<ScanNotice | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -268,6 +287,7 @@ export default function ScanPage() {
     setCandidates(found.candidates);
     setResult(found.house);
     setPrimaryMatch(found.match);
+    setSameParcel(found.sameParcel);
     setAdded(false);
     return Boolean(found.house);
   }, []);
@@ -287,6 +307,7 @@ export default function ScanPage() {
       setPrimaryMatch(null);
       setCandidates([]);
       setTracking(null);
+      setSameParcel(null);
       setAdded(false);
       setLastCode("");
 
@@ -387,6 +408,7 @@ export default function ScanPage() {
       setDraft(emptyFields());
       setNotice(null);
       setAdded(false);
+      setSameParcel(null);
       setLastCode(trimmed);
 
       try {
@@ -469,6 +491,7 @@ export default function ScanPage() {
     setNotice(null);
     setCandidates([]);
     setTracking(null);
+    setSameParcel(null);
 
     const scanner = scannerRef.current;
     if (scanner) {
@@ -687,6 +710,7 @@ export default function ScanPage() {
     setDraft(emptyFields());
     setNotice(null);
     setAdded(false);
+    setSameParcel(null);
     setLastCode(code);
     try {
       const found = await applyIdentify(code);
@@ -864,6 +888,7 @@ export default function ScanPage() {
         candidates={candidates}
         tracking={tracking}
         notice={notice}
+        sameParcel={sameParcel}
         busy={adding}
         added={added}
         onClose={() => setSheetOpen(false)}

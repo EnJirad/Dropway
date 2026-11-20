@@ -29,7 +29,34 @@ export async function POST(request: NextRequest) {
     const houses = (await sql`SELECT * FROM public.houses;`) as unknown as House[];
     const candidates = matchHouses(houses, text);
 
-    return NextResponse.json({ candidates, tracking, count: candidates.length });
+    // เลขพัสดุเดียวกัน = พัสดุชิ้นเดียวกัน → เพิ่มเข้าคิวซ้ำไม่ได้
+    let existingParcel: unknown = null;
+    if (tracking) {
+      const rows = await sql`
+        SELECT
+          p.nav_id,
+          p.tracking_number,
+          p.created_at,
+          unh.house_id,
+          unh.delivery_status,
+          COALESCE(h.full_name, unh.dest_name) AS full_name,
+          COALESCE(h.address, unh.dest_address) AS address
+        FROM public.parcels p
+        JOIN public.user_navigation_houses unh ON unh.id = p.nav_id
+        LEFT JOIN public.houses h ON h.id = unh.house_id
+        WHERE upper(replace(p.tracking_number, ' ', '')) = ${tracking.toUpperCase()}
+        ORDER BY p.created_at DESC
+        LIMIT 1;
+      `;
+      existingParcel = rows[0] ?? null;
+    }
+
+    return NextResponse.json({
+      candidates,
+      tracking,
+      count: candidates.length,
+      existing_parcel: existingParcel,
+    });
   } catch (error) {
     console.error("API /api/houses/match error:", error);
     return NextResponse.json(

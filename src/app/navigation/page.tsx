@@ -30,6 +30,7 @@ import {
   PanelRight,
   QrCode,
   Undo2,
+  Package,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { useModalKeyboardBehavior } from "@/lib/viewport";
@@ -58,6 +59,49 @@ function getDistanceFromLatLon(
 }
 function deg2rad(deg: number) {
   return deg * (Math.PI / 180);
+}
+
+/**
+ * รายการเลขพัสดุของจุดส่ง — แสดงไม่เกิน 2 เลขก่อน ถ้ามีมากกว่านั้นให้กดเปิดดู
+ * (เลขเดียวกัน = พัสดุชิ้นเดียวกัน)
+ */
+function ParcelTrackingList({ numbers }: { numbers: string[] }) {
+  const [open, setOpen] = useState(false);
+  if (numbers.length === 0) return null;
+  const visible = open ? numbers : numbers.slice(0, 2);
+
+  return (
+    <div className="mt-3 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="shrink-0 font-semibold text-gray-600">เลขพัสดุ:</span>
+        {visible.map((tracking) => (
+          <span
+            key={tracking}
+            className="break-all rounded-md bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-700"
+          >
+            {tracking}
+          </span>
+        ))}
+        {numbers.length > 2 && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen((value) => !value);
+            }}
+            aria-expanded={open}
+            className="inline-flex min-h-7 items-center gap-0.5 rounded-md px-1.5 py-0.5 font-bold text-teal-700 hover:bg-teal-50"
+          >
+            {open ? "ย่อ" : `ดูทั้งหมด (${numbers.length})`}
+            <ChevronUp
+              className={`h-3.5 w-3.5 transition-transform ${open ? "" : "rotate-180"}`}
+              aria-hidden="true"
+            />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 // สร้าง type ใหม่เพื่อรองรับ distance ที่เพิ่มเข้าไปตอน sort
 interface NavigationHouseWithDistance extends NavigationHouse {
@@ -2367,11 +2411,6 @@ export default function NavigationPage() {
                         </span>
                         <h3 className="text-wrap-safe line-clamp-2 text-lg font-bold text-orange-700">
                           {h.full_name || "ไม่มีชื่อ"}
-                    {h.tracking_number && (
-                      <span className="ml-2 break-all font-mono text-xs font-medium text-gray-500">
-                        {h.tracking_number}
-                      </span>
-                    )}
                         </h3>
                         {!h.lat && !h.lng && (
                           <span className="badge badge-amber">ไม่มีพิกัด</span>
@@ -2439,6 +2478,21 @@ export default function NavigationPage() {
                           </div>
                         </div>
                       )}
+
+                      {/* เลขพัสดุ — อยู่ใต้หมายเหตุ ย่อไว้เมื่อมีหลายเลข */}
+                      {(() => {
+                        const numbers = (h.parcels ?? [])
+                          .map((parcel) => (parcel.tracking_number ?? "").trim())
+                          .filter(Boolean);
+                        if (numbers.length === 0 && h.tracking_number) {
+                          const fallback = h.tracking_number
+                            .split(",")
+                            .map((part) => part.trim())
+                            .filter(Boolean);
+                          numbers.push(...fallback);
+                        }
+                        return <ParcelTrackingList numbers={numbers} />;
+                      })()}
 
                       {/* คนขับบันทึก (driver_note) */}
                       {h.driver_note && (
@@ -2511,6 +2565,20 @@ export default function NavigationPage() {
                           </div>
                         </div>
                       )}
+
+                      {/* จำนวนพัสดุ — มุมซ้ายล่างของการ์ด */}
+                      {(() => {
+                        const count = Math.max(
+                          1,
+                          h.parcel_count ?? h.parcels?.length ?? h.quantity ?? 1,
+                        );
+                        return (
+                          <div className="mt-auto flex items-center gap-1.5 pt-3 text-xs font-bold text-teal-700">
+                            <Package className="h-3.5 w-3.5" aria-hidden="true" />
+                            พัสดุ {count} ชิ้น
+                          </div>
+                        );
+                      })()}
                     </div>
                     </div>
 

@@ -1,32 +1,37 @@
 /**
- * OCR ในเครื่อง (Tesseract) แบบเร็ว
+ * OCR ในเครื่อง (Tesseract)
  *
- * ความเร็วมาจาก 3 อย่าง:
- * 1. เก็บ worker ไว้ใช้ซ้ำ — สร้างครั้งแรกครั้งเดียว ไม่ terminate ทุกครั้งที่สแกน
- * 2. warmup ล่วงหน้าตอนเข้าหน้า ผู้ใช้ถ่ายรูปเสร็จ worker พร้อมแล้ว
- * 3. preprocess ด้วย canvas ครั้งเดียว (ย่อ/ขยาย + เทา + เพิ่มคอนทราสต์) ก่อนส่ง OCR
+ * ความเร็ว:
+ * - เก็บ worker ไว้ใช้ซ้ำ สร้างครั้งแรกครั้งเดียว + warmup ตอนเข้าหน้า
+ * - ปิด worker เมื่อ idle
  *
- * ทุกฟังก์ชันไม่ throw ออกไปนอกไฟล์: ผู้เรียกได้ { ok: false } ไปแสดงสถานะแทน
+ * ความแม่น:
+ * - รอบแรกใช้ภาพที่ปรับคอนทราสต์เล็กน้อย
+ * - ถ้าผลออกมาไม่มั่นใจ (confidence ต่ำ / ตัวอักษรไทยน้อย) จะอ่านซ้ำด้วยภาพต้นฉบับ
+ *   แล้วเลือกผลที่ดีกว่า — ภาพต้นฉบับช่วยได้มากเมื่อภาพมีแสงไม่สม่ำเสมอหรือพิมพ์จาง
  */
 
 type OcrWorker = {
-  recognize: (image: HTMLCanvasElement | string) => Promise<{ data: { text: string } }>;
+  recognize: (
+    image: HTMLCanvasElement | string,
+  ) => Promise<{ data: { text: string; confidence?: number } }>;
   setParameters: (params: Record<string, string>) => Promise<unknown>;
   terminate: () => Promise<unknown>;
 };
 
-/** เก็บ worker ไว้ในโมดูล ใช้ร่วมกันทุกครั้งที่สแกน */
 let workerPromise: Promise<OcrWorker> | null = null;
-/** นับงานที่กำลังทำอยู่ ห้าม terminate ระหว่างนี้ */
 let inFlight = 0;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** ปิด worker เมื่อไม่ถูกใช้ครบเวลานี้ (คืนหน่วยความจำบนมือถือ) */
 const IDLE_DISPOSE_MS = 90_000;
-/** ด้านยาวสุดของภาพที่ส่ง OCR — ใหญ่พอให้ตัวหนังสือเล็กอ่านได้ ไม่ใหญ่จนช้า */
-const OCR_MAX_SIDE = 1800;
-/** ย่อภาพเล็กให้น้อยกว่านี้ไม่ได้ เพราะตัวหนังสือจะแตก */
-const OCR_MIN_SIDE = 1100;
+/** ด้านยาวสุดของภาพที่ส่ง OCR */
+const OCR_MAX_SIDE = 2000;
+/** ภาพเล็กกว่านี้ขยายขึ้นเพื่อให้ตัวหนังสืออ่านง่าย */
+const OCR_MIN_SIDE = 1000;
+/** ต่ำกว่านี้ถือว่าผลยังไม่น่าเชื่อถือ ให้ลองอีกรอบด้วยภาพต้นฉบับ */
+const RETRY_CONFIDENCE = 70;
+/** ตัวอักษรไทยน้อยกว่านี้ถือว่าอ่านไม่ครบ */
+const RETRY_THAI_CHARS = 10;
 
 function clearIdleTimer() {
   if (idleTimer !== null) {
@@ -50,10 +55,7 @@ async function buildWorker(): Promise<OcrWorker> {
   const worker = (await createWorker(["tha", "eng"])) as unknown as OcrWorker;
   try {
     await worker.setParameters({
-      // AUTO อ่านได้ทั้งบล็อกข้อความและบรรทัดเดี่ยวแบบฉลากพัสดุ
       tessedit_pageseg_mode: String(PSM.AUTO),
-      // รักษาช่องว่างระหว่างคำ ช่วยแยกชื่อ/ที่อยู่
-      preserve_interword_spaces: "1",
       user_defined_dpi: "300",
     });
   } catch {
@@ -62,7 +64,6 @@ async function buildWorker(): Promise<OcrWorker> {
   return worker;
 }
 
-/** คืน worker (สร้างครั้งแรกครั้งเดียว) */
 export function getOcrWorker(): Promise<OcrWorker> {
   if (!workerPromise) {
     workerPromise = buildWorker().catch((error) => {
@@ -79,11 +80,10 @@ export function warmupOcr(): void {
   void getOcrWorker()
     .then(() => scheduleIdleDispose())
     .catch(() => {
-      // เน็ตช้าหรือ worker สร้างไม่ได้ — ปล่อยให้ลองใหม่ตอนสแกนจริง
+      // worker สร้างไม่ได้ — ปล่อยให้ลองใหม่ตอนสแกนจริง
     });
 }
 
-/** ปิด worker ทิ้ง (เรียกตอนออกจากหน้า) */
 export async function disposeOcr(): Promise<void> {
   clearIdleTimer();
   const pending = workerPromise;
@@ -113,11 +113,8 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
-/**
- * เตรียมภาพให้ OCR: ขยายภาพเล็กให้พออ่านตัวหนังสือ, ย่อภาพใหญ่เพื่อความเร็ว,
- * แปลงเป็นขาวเทา แล้วยืดคอนทราสต์ด้วย percentile 5–95 (เร็วและไม่ทำให้ตัวหนังสือขาด)
- */
-export async function preprocessForOcr(file: File): Promise<HTMLCanvasElement> {
+/** วาดภาพลง canvas โดยคุมขนาดด้านยาวสุด */
+async function toCanvas(file: File): Promise<HTMLCanvasElement> {
   const image = await loadImage(file);
   const natural = Math.max(image.naturalWidth, image.naturalHeight) || 1;
   const target = Math.min(OCR_MAX_SIDE, Math.max(OCR_MIN_SIDE, natural));
@@ -131,56 +128,113 @@ export async function preprocessForOcr(file: File): Promise<HTMLCanvasElement> {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("เตรียมภาพไม่ได้");
   ctx.drawImage(image, 0, 0, width, height);
+  return canvas;
+}
 
+/**
+ * ปรับภาพแบบเบา ๆ: เทา + ยืดคอนทราสต์เฉพาะภาพที่ช่วงแสงแคบจริง
+ * (ภาพที่แสงดีอยู่แล้วปล่อยไว้ ไม่ทำให้ตัวหนังสือจางหาย)
+ */
+function enhanceContrast(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  const { width, height } = canvas;
   const imageData = ctx.getImageData(0, 0, width, height);
   const px = imageData.data;
 
-  // สุ่มหาค่าแสงต่ำ/สูงจริงของภาพ (ทุก ๆ 7 พิกเซล) เพื่อไม่ให้ noise กำหนดช่วง
-  const step = 7 * 4;
   const samples: number[] = [];
+  const step = 7 * 4;
   for (let i = 0; i < px.length; i += step) {
     samples.push(0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]);
   }
+  if (samples.length === 0) return;
   samples.sort((a, b) => a - b);
   const low = samples[Math.floor(samples.length * 0.05)] ?? 0;
   const high = samples[Math.floor(samples.length * 0.95)] ?? 255;
   const range = Math.max(1, high - low);
 
-  if (range < 250) {
-    for (let i = 0; i < px.length; i += 4) {
-      const gray = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-      const value = Math.max(0, Math.min(255, Math.round(((gray - low) / range) * 255)));
-      px[i] = value;
-      px[i + 1] = value;
-      px[i + 2] = value;
-    }
-    ctx.putImageData(imageData, 0, 0);
-  }
+  // ช่วงแสงกว้างอยู่แล้ว = ภาพชัด ไม่ต้องแตะ
+  if (range >= 180) return;
 
+  for (let i = 0; i < px.length; i += 4) {
+    const gray = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const value = Math.max(0, Math.min(255, Math.round(((gray - low) / range) * 255)));
+    px[i] = value;
+    px[i + 1] = value;
+    px[i + 2] = value;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/** ภาพที่ผ่านการปรับคอนทราสต์ (ใช้ทดสอบ/เรียกแยกได้) */
+export async function preprocessForOcr(file: File): Promise<HTMLCanvasElement> {
+  const canvas = await toCanvas(file);
+  enhanceContrast(canvas);
   return canvas;
 }
 
+function thaiCharCount(text: string): number {
+  const matches = text.match(/[\u0E00-\u0E7F]/g);
+  return matches ? matches.length : 0;
+}
+
+type OcrPass = { text: string; confidence: number };
+
+function quality(pass: OcrPass): number {
+  // confidence เป็นหลัก แต่นับตัวอักษรไทยที่อ่านได้ด้วย (ภาษาไทยคือข้อมูลสำคัญ)
+  return pass.confidence + Math.min(15, thaiCharCount(pass.text) / 4);
+}
+
+function needsRetry(pass: OcrPass): boolean {
+  return pass.confidence < RETRY_CONFIDENCE || thaiCharCount(pass.text) < RETRY_THAI_CHARS;
+}
+
 export type OcrAttempt =
-  | { ok: true; text: string; ms: number }
+  | { ok: true; text: string; ms: number; confidence: number; passes: number }
   | { ok: false; ms: number; message: string };
 
 /**
  * อ่านข้อความจากรูปฉลาก ไม่ throw
- * ผู้เรียกใช้ผลลัพธ์เพื่อส่งเข้าตัวแยกข้อมูล (labelParse) ต่อ
+ * คืนข้อความที่ดีที่สุดจากการอ่าน 1–2 รอบ
  */
 export async function recognizeLabel(file: File): Promise<OcrAttempt> {
   const started = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const elapsed = () =>
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - started;
+
   try {
-    const canvas = await preprocessForOcr(file);
+    const canvas = await toCanvas(file);
     const worker = await getOcrWorker();
+
     inFlight += 1;
     clearIdleTimer();
     try {
-      const result = await worker.recognize(canvas);
+      const passes: OcrPass[] = [];
+
+      // รอบแรก: ภาพต้นฉบับ (แม่นที่สุดเมื่อภาพชัด)
+      const first = await worker.recognize(canvas);
+      passes.push({
+        text: first.data.text ?? "",
+        confidence: typeof first.data.confidence === "number" ? first.data.confidence : 0,
+      });
+
+      // รอบสอง: เฉพาะเมื่อผลยังไม่น่าเชื่อถือ → เพิ่มคอนทราสต์แล้วอ่านซ้ำ
+      if (needsRetry(passes[0])) {
+        const enhanced = await preprocessForOcr(file);
+        const second = await worker.recognize(enhanced);
+        passes.push({
+          text: second.data.text ?? "",
+          confidence: typeof second.data.confidence === "number" ? second.data.confidence : 0,
+        });
+      }
+
+      const best = passes.reduce((a, b) => (quality(b) > quality(a) ? b : a));
       return {
         ok: true,
-        text: result.data.text ?? "",
-        ms: (typeof performance !== "undefined" ? performance.now() : Date.now()) - started,
+        text: best.text,
+        confidence: Math.round(best.confidence),
+        passes: passes.length,
+        ms: elapsed(),
       };
     } finally {
       inFlight -= 1;
@@ -189,7 +243,7 @@ export async function recognizeLabel(file: File): Promise<OcrAttempt> {
   } catch (error) {
     return {
       ok: false,
-      ms: (typeof performance !== "undefined" ? performance.now() : Date.now()) - started,
+      ms: elapsed(),
       message: error instanceof Error ? error.message : "OCR ทำงานไม่สำเร็จ",
     };
   }

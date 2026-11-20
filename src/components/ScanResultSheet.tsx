@@ -44,6 +44,13 @@ type Props = {
   candidates: HouseMatch[];
   tracking: string | null;
   notice: ScanNotice | null;
+  /** เลขพัสดุนี้อยู่ในคิวแล้ว = พัสดุชิ้นเดียวกัน เพิ่มซ้ำไม่ได้ */
+  sameParcel: {
+    tracking_number: string | null;
+    full_name: string | null;
+    created_at: string;
+    delivery_status: string | null;
+  } | null;
   /** กำลังเพิ่มเข้าคิว/บันทึกอยู่ */
   busy: boolean;
   added: boolean;
@@ -96,6 +103,7 @@ export default function ScanResultSheet({
   candidates,
   tracking,
   notice,
+  sameParcel,
   busy,
   added,
   onClose,
@@ -202,6 +210,23 @@ export default function ScanResultSheet({
         </div>
 
         <div className="scan-sheet-body" data-modal-scroll>
+          {sameParcel ? (
+            <div
+              role="status"
+              className="mb-3 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+              <span>
+                <span className="block font-bold">พัสดุชิ้นนี้อยู่ในคิวแล้ว</span>
+                <span className="mt-0.5 block leading-relaxed">
+                  เลขพัสดุ {sameParcel.tracking_number ?? tracking ?? ""} ถูกสแกนแล้ว
+                  {sameParcel.full_name ? ` (${sameParcel.full_name})` : ""} —
+                  เลขเดียวกันคือชิ้นเดียวกัน จึงเพิ่มเข้าคิวนำทางซ้ำไม่ได้
+                </span>
+              </span>
+            </div>
+          ) : null}
+
           {notice ? (
             <div
               role="status"
@@ -292,7 +317,7 @@ export default function ScanResultSheet({
               <button
                 type="button"
                 onClick={() => void handleAdd()}
-                disabled={busy || saving || added}
+                disabled={busy || saving || added || Boolean(sameParcel)}
                 className="btn btn-primary col-span-3 sm:col-span-1"
               >
                 {busy ? (
@@ -300,7 +325,11 @@ export default function ScanResultSheet({
                 ) : (
                   <PlusCircle className="h-4 w-4" aria-hidden="true" />
                 )}
-                {added ? "เพิ่มแล้ว" : "เพิ่มเข้านำทาง"}
+                {sameParcel
+                  ? "พัสดุชิ้นเดียวกัน"
+                  : added
+                    ? "เพิ่มแล้ว"
+                    : "เพิ่มเข้านำทาง"}
               </button>
               <button
                 type="button"
