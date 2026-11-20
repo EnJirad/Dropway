@@ -77,6 +77,14 @@ function dbUnavailable() {
   );
 }
 
+async function encryptionReady(): Promise<boolean> {
+  try {
+    return await isKeyEncryptionReady();
+  } catch {
+    return false;
+  }
+}
+
 // GET /api/settings/ai — อ่านค่าที่บันทึกไว้ (ไม่คืน key เด็ดขาด)
 export async function GET() {
   if (!isAiSettingsDbReady()) return dbUnavailable();
@@ -86,7 +94,7 @@ export async function GET() {
       {
         ok: true,
         dbReady: true,
-        encryptionReady: isKeyEncryptionReady(),
+        encryptionReady: await encryptionReady(),
         ...publicState(record),
       },
       { headers: NO_STORE },
@@ -112,11 +120,11 @@ export async function PUT(request: NextRequest) {
     const backupKey =
       typeof body.backupKey === "string" ? body.backupKey.trim().slice(0, 500) : undefined;
 
-    if ((apiKey || backupKey) && !isKeyEncryptionReady()) {
+    if ((apiKey || backupKey) && !(await encryptionReady())) {
       return NextResponse.json(
         {
           error:
-            "ยังไม่ได้ตั้งค่า AI_KEYS_SECRET บนเซิร์ฟเวอร์ จึงยังบันทึก key ลงฐานข้อมูลไม่ได้",
+            "ยังเตรียมคีย์เข้ารหัสไม่ได้ — ตรวจการเชื่อมต่อฐานข้อมูล (หรือตั้ง AI_KEYS_SECRET)",
         },
         { status: 503, headers: NO_STORE },
       );
@@ -127,7 +135,7 @@ export async function PUT(request: NextRequest) {
       {
         ok: true,
         dbReady: true,
-        encryptionReady: isKeyEncryptionReady(),
+        encryptionReady: await encryptionReady(),
         ...publicState(record),
       },
       { headers: NO_STORE },

@@ -160,3 +160,13 @@ CREATE TABLE IF NOT EXISTS public.ai_settings (
   backup_key_hint TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================================
+-- ตาราง secret ระดับแอป (สร้างอัตโนมัติเมื่อไม่มี env AI_KEYS_SECRET)
+-- ใช้เก็บคีย์สำหรับเข้ารหัส API key ใน ai_settings
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.app_secrets (
+  name TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

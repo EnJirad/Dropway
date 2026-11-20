@@ -500,8 +500,8 @@ export default function SettingsPage() {
             <p className="flex items-start gap-1 text-amber-700">
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-none" aria-hidden="true" />
               <span>
-                ยังไม่ได้ตั้ง AI_KEYS_SECRET บนเซิร์ฟเวอร์ — เก็บ key ลงฐานข้อมูลไม่ได้
-                (ใช้ได้เฉพาะในแท็บนี้)
+                ยังเตรียมคีย์เข้ารหัสไม่ได้ — ตรวจการเชื่อมต่อฐานข้อมูล
+                (หรือตั้ง AI_KEYS_SECRET เอง)
               </span>
             </p>
           )}
