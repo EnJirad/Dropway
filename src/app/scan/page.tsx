@@ -17,7 +17,7 @@ import { House } from "@/types/house";
 import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
 import { composeAddress, type LabelFields } from "@/lib/labelParse";
 import { isAiReady, loadSettings } from "@/lib/aiSettings";
-import { readLabelWithAi } from "@/lib/aiScan";
+import { hasServerAiKey, readLabelWithAi } from "@/lib/aiScan";
 import { disposeOcr, recognizeLabel, warmupOcr } from "@/lib/ocr";
 import {
   ANALYSIS_MAX_SIDE,
@@ -340,7 +340,9 @@ export default function ScanPage() {
 
       try {
         const settings = loadSettings();
-        const useAi = isAiReady(settings);
+        // key ในหน่วยความจำอาจหายหลังรีเฟรช แต่ถ้าบันทึกไว้ในฐานข้อมูลแล้วยังใช้ได้
+        let useAi = isAiReady(settings);
+        if (!useAi && settings.scanMode === "ai") useAi = await hasServerAiKey();
         // OCR ในเครื่องทำงานคู่ขนานได้ เพราะใช้ CPU ขณะที่ AI รอเน็ต — เวลารวมจึงเท่าตัวที่ช้าสุด
         const runOcr = !useAi || settings.fallbackToOcr;
 
