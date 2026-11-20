@@ -64,7 +64,10 @@ function loadEnv() {
 
 const env = loadEnv();
 const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-const supabaseAnonKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+const supabaseAnonKey = (
+  env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+)?.trim();
 
 // 2. ตรวจสอบว่ามีค่า Env หรือไม่
 console.log(`\n${colors.bold}[ขั้นตอนที่ 1] ตรวจสอบค่า Environment Variables${colors.reset}`);
@@ -79,11 +82,11 @@ if (!supabaseUrl || supabaseUrl === 'https://your-project-id.supabase.co') {
 }
 
 if (!supabaseAnonKey || supabaseAnonKey.includes('your-anon-key-here')) {
-  console.log(`  ${colors.red}✗ NEXT_PUBLIC_SUPABASE_ANON_KEY:${colors.reset} ยังไม่ได้ระบุ หรือยังเป็นค่าตั้งต้น`);
+  console.log(`  ${colors.red}✗ NEXT_PUBLIC_SUPABASE_ANON_KEY / PUBLISHABLE_KEY:${colors.reset} ยังไม่ได้ระบุ หรือยังเป็นค่าตั้งต้น`);
   hasMissingConfig = true;
 } else {
   const maskedKey = supabaseAnonKey.slice(0, 15) + '...' + supabaseAnonKey.slice(-10);
-  console.log(`  ${colors.green}✓ NEXT_PUBLIC_SUPABASE_ANON_KEY:${colors.reset} ${maskedKey}`);
+  console.log(`  ${colors.green}✓ NEXT_PUBLIC_SUPABASE_ANON_KEY / PUBLISHABLE_KEY:${colors.reset} ${maskedKey}`);
 }
 
 if (hasMissingConfig) {
