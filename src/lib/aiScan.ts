@@ -76,6 +76,7 @@ export async function readLabelWithAi(file: File, settings: AppSettings): Promis
       body: JSON.stringify({
         provider: settings.provider,
         apiKey: settings.apiKeys[settings.provider],
+        backupApiKey: settings.backupApiKeys[settings.provider] ?? "",
         model: settings.models[settings.provider],
         fallbackModel: settings.fallbackModels[settings.provider],
         maxAttempts: settings.aiMaxAttempts,

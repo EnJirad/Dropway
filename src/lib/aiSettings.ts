@@ -72,6 +72,8 @@ export type AppSettings = {
   scanMode: ScanMode;
   provider: AiProvider;
   apiKeys: Record<AiProvider, string>;
+  /** key สำรองต่อผู้ให้บริการ ใช้เมื่อ key หลักติดลิมิต/โควตาหมด (ว่าง = ไม่ใช้) */
+  backupApiKeys: Record<AiProvider, string>;
   models: Record<AiProvider, string>;
   /** ถ้า AI ใช้ไม่ได้ ให้ลองอ่านด้วย OCR ในเครื่องต่อ */
   fallbackToOcr: boolean;
@@ -90,6 +92,7 @@ export function defaultSettings(): AppSettings {
     scanMode: "ocr",
     provider: "gemini",
     apiKeys: { gemini: "", openai: "", anthropic: "" },
+    backupApiKeys: { gemini: "", openai: "", anthropic: "" },
     models: { ...DEFAULT_MODELS },
     fallbackToOcr: true,
     // 1600px: ตัวอักษรไทยบนใบปะหน้าเล็กกว่าภาษาลาติน ต้องเก็บรายละเอียดมากกว่าภาพตัวอย่างทั่วไป
@@ -129,6 +132,8 @@ export function loadSettings(): AppSettings {
     for (const id of PROVIDER_IDS) {
       const key = p.apiKeys?.[id];
       if (typeof key === "string") base.apiKeys[id] = key;
+      const backupKey = p.backupApiKeys?.[id];
+      if (typeof backupKey === "string") base.backupApiKeys[id] = backupKey;
       const model = p.models?.[id];
       if (typeof model === "string" && model.trim()) base.models[id] = model.trim();
       const fallback = p.fallbackModels?.[id];

@@ -48,6 +48,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [showBackupKey, setShowBackupKey] = useState(false);
   const [useCustomModel, setUseCustomModel] = useState(false);
 
   const [models, setModels] = useState<AiModelInfo[]>([]);
@@ -62,13 +63,21 @@ export default function SettingsPage() {
 
   const info = PROVIDERS.find((p) => p.id === settings.provider) ?? PROVIDERS[0];
   const key = settings.apiKeys[settings.provider];
+  const backupKey = settings.backupApiKeys[settings.provider] ?? "";
   const model = settings.models[settings.provider];
   const detected = detectProvider(key);
+  const backupDetected = detectProvider(backupKey);
 
   const patch = (next: Partial<AppSettings>) => setSettings((s) => ({ ...s, ...next }));
 
   const setKeyFor = (provider: AiProvider, value: string) =>
     setSettings((s) => ({ ...s, apiKeys: { ...s.apiKeys, [provider]: value } }));
+
+  const setBackupKeyFor = (provider: AiProvider, value: string) =>
+    setSettings((s) => ({
+      ...s,
+      backupApiKeys: { ...s.backupApiKeys, [provider]: value },
+    }));
 
   const setModelFor = (provider: AiProvider, value: string) =>
     setSettings((s) => ({ ...s, models: { ...s.models, [provider]: value } }));
@@ -149,9 +158,18 @@ export default function SettingsPage() {
       toast.error(`ใส่ API key ของ ${info.name} ก่อนเปิดโหมด AI`);
       return;
     }
+    const trimmedBackup = backupKey.trim();
+    if (trimmedBackup && trimmedBackup === key.trim()) {
+      toast.error("key สำรองซ้ำกับ key หลัก — ใช้คนละ key ถึงจะช่วยตอนติดลิมิตได้");
+      return;
+    }
     const next: AppSettings = {
       ...settings,
       apiKeys: { ...settings.apiKeys, [settings.provider]: key.trim() },
+      backupApiKeys: {
+        ...settings.backupApiKeys,
+        [settings.provider]: trimmedBackup,
+      },
       models: {
         ...settings.models,
         [settings.provider]: model.trim() || DEFAULT_MODELS[settings.provider],
@@ -170,7 +188,8 @@ export default function SettingsPage() {
     setModels([]);
     setModelState("idle");
     setKeyFor(settings.provider, "");
-    toast.success("ล้าง key แล้ว กดบันทึกเพื่อยืนยัน");
+    setBackupKeyFor(settings.provider, "");
+    toast.success("ล้าง key หลักและ key สำรองแล้ว กดบันทึกเพื่อยืนยัน");
   };
 
   return (
@@ -324,6 +343,49 @@ export default function SettingsPage() {
 
         {loaded && key && !showKey && (
           <span className="mt-1 block text-xs text-gray-500">บันทึกไว้: {maskKey(key)}</span>
+        )}
+
+        {/* API key สำรอง — ใช้เมื่อ key หลักติดลิมิต/โควตาหมด */}
+        <label className="mt-4 block text-xs font-medium text-gray-600">
+          API key สำรอง (ไม่บังคับ)
+          <div className="mt-1 flex gap-2">
+            <input
+              type={showBackupKey ? "text" : "password"}
+              value={backupKey}
+              onChange={(event) => setBackupKeyFor(settings.provider, event.target.value)}
+              placeholder={`key อีกอันของ ${info.name} (${info.keyPrefix})`}
+              autoComplete="off"
+              spellCheck={false}
+              className="input min-w-0 flex-1 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setShowBackupKey((v) => !v)}
+              aria-label={showBackupKey ? "ซ่อน key สำรอง" : "แสดง key สำรอง"}
+              className="btn btn-secondary"
+            >
+              {showBackupKey ? (
+                <EyeOff className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Eye className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+          </div>
+        </label>
+        <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+          ถ้า key หลักโดน 429 (โควตาหมด/ติดลิมิต) หรือสิทธิ์ไม่พอ ระบบจะสลับไปใช้ key นี้ให้เอง
+          แล้วสแกนต่อได้ทันที — ไม่ต้องกดอะไรระหว่างสแกน
+        </p>
+        {backupDetected && backupDetected !== settings.provider && (
+          <p className="mt-1 flex items-center gap-1 text-xs text-amber-700">
+            <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            key สำรองดูเป็นของ {providerName(backupDetected)} — จะใช้กับ {info.name} ไม่ได้
+          </p>
+        )}
+        {loaded && backupKey && !showBackupKey && (
+          <span className="mt-1 block text-xs text-gray-500">
+            บันทึกไว้: {maskKey(backupKey)}
+          </span>
         )}
 
         {/* ผู้ให้บริการ */}
@@ -520,7 +582,7 @@ export default function SettingsPage() {
           ความเป็นส่วนตัวและอื่น ๆ
         </h2>
         <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-gray-600">
-          <li>API key เก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ไม่ถูกบันทึกลงฐานข้อมูล</li>
+          <li>API key (ทั้ง key หลักและ key สำรอง) เก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ไม่ถูกบันทึกลงฐานข้อมูล</li>
           <li>ตอนสแกน รูปและ key จะส่งผ่านเซิร์ฟเวอร์ของแอปไปยังผู้ให้บริการ AI ที่เลือก เซิร์ฟเวอร์ไม่เก็บไว้</li>
           <li>รูปฉลากมีชื่อและที่อยู่ลูกค้า ตรวจเงื่อนไขการใช้ข้อมูลของผู้ให้บริการก่อนใช้งานจริง</li>
           <li>อย่าใช้ key ร่วมกับเครื่องสาธารณะ และตั้งวงเงินใช้จ่ายที่เว็บผู้ให้บริการไว้</li>

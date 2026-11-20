@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_MODELS, PROVIDER_IDS, type AiProvider } from "@/lib/aiSettings";
 import { ProviderError, providerErrorFromHttp, resolveRetryConfig } from "@/lib/aiRetry";
-import { runWithResilience } from "@/lib/aiResilience";
+import { buildKeySlots, isKeyProblem } from "@/lib/aiKeys";
+import { runWithResilience, type ResilienceResult } from "@/lib/aiResilience";
 import { LABEL_JSON_SCHEMA, LABEL_PROMPT, buildFocusPrompt } from "@/lib/labelPrompt";
 import type { LabelFields } from "@/lib/labelParse";
 import {
@@ -204,6 +205,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const provider = body.provider as AiProvider;
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    const backupApiKey = typeof body.backupApiKey === "string" ? body.backupApiKey.trim() : "";
     const image = typeof body.image === "string" ? body.image : "";
     const mime = typeof body.mimeType === "string" ? body.mimeType : "image/jpeg";
     const model =
@@ -230,18 +232,59 @@ export async function POST(request: NextRequest) {
     const fallbackModel = MODEL_RE.test(fallbackRaw) ? fallbackRaw : "";
     const config = resolveRetryConfig({ maxAttempts: body.maxAttempts, timeoutMs: body.timeoutMs });
 
-    const first = await runWithResilience({
-      models: [model, fallbackModel],
-      config,
-      call: async (m, signal) => parseResult(await call(apiKey, m, mime, image, signal, LABEL_PROMPT)),
-      // log เฉพาะข้อมูลทางเทคนิค ไม่มี key รูป หรือข้อมูลผู้รับ
-      onAttempt: (info) => console.warn("[ai/label] attempt", JSON.stringify({ provider, ...info })),
-    });
+    // ลำดับ key: หลักก่อน แล้วค่อยสำรอง — สลับเมื่อ key หลักติดโควตาหรือสิทธิ์
+    const keys = buildKeySlots(apiKey, backupApiKey);
+    if (!keys.length) {
+      return NextResponse.json({ error: "ยังไม่ได้ใส่ API key" }, { status: 400 });
+    }
+
+    let first: ResilienceResult<ReadResult> | null = null;
+    let usedBackupKey = false;
+    let keyIndexUsed = 0;
+    let lastKeyError: ProviderError | null = null;
+
+    for (let i = 0; i < keys.length; i++) {
+      try {
+        first = await runWithResilience({
+          models: [model, fallbackModel],
+          config,
+          call: async (m, signal) =>
+            parseResult(await call(keys[i].key, m, mime, image, signal, LABEL_PROMPT)),
+          // log เฉพาะข้อมูลทางเทคนิค ไม่มี key รูป หรือข้อมูลผู้รับ
+          onAttempt: (info) =>
+            console.warn(
+              "[ai/label] attempt",
+              JSON.stringify({ provider, keySlot: keys[i].slot, ...info }),
+            ),
+        });
+        keyIndexUsed = i;
+        usedBackupKey = i > 0;
+        break;
+      } catch (e) {
+        if (!(e instanceof ProviderError)) throw e;
+        lastKeyError = e;
+        // สลับไป key สำรองเฉพาะเมื่อปัญหาอยู่ที่ key ไม่ใช่ที่เน็ต/เซิร์ฟเวอร์ผู้ให้บริการ
+        const keyProblem = isKeyProblem(e);
+        if (!keyProblem || i === keys.length - 1) throw e;
+        console.warn("[ai/label] primary key unavailable, switching to backup", e.code);
+      }
+    }
+    if (!first) {
+      throw (
+        lastKeyError ??
+        new ProviderError("AI ไม่พร้อมใช้งาน", {
+          code: "AI_UNAVAILABLE",
+          status: 503,
+          retryable: true,
+        })
+      );
+    }
 
     let fields = first.value.fields;
     let modelUsed = first.model;
     const usedFallback = first.usedFallback;
     let confidence = first.value.confidence;
+    const callKey = keys[keyIndexUsed].key;
 
     // รอบสอง: อ่านซ้ำเฉพาะช่องสำคัญที่ยังขาด/ผิดรูป (จำกัดเวลาและครั้ง)
     // ไม่ยิงเพิ่มเพียงเพราะไม่มีเลขพัสดุ — ใบหลายใบไม่มีเลขนี้พิมพ์อยู่ และการยิงซ้ำมีต้นทุน
@@ -258,7 +301,7 @@ export async function POST(request: NextRequest) {
             totalBudgetMs: Math.min(config.totalBudgetMs, 14_000),
           },
           call: async (m, signal) =>
-            parseResult(await call(apiKey, m, mime, image, signal, buildFocusPrompt(gaps))),
+            parseResult(await call(callKey, m, mime, image, signal, buildFocusPrompt(gaps))),
         });
         fields = fillGaps(fields, focus.value.fields, gaps);
         confidence = { ...confidence, ...focus.value.confidence };
@@ -275,6 +318,7 @@ export async function POST(request: NextRequest) {
       fields: finalFields,
       model: modelUsed,
       usedFallback,
+      usedBackupKey,
       missing: criticalGaps(finalFields),
       confidence,
     });
