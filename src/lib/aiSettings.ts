@@ -54,6 +54,16 @@ export const DEFAULT_MODELS: Record<AiProvider, string> = {
   anthropic: "claude-3-5-haiku-latest",
 };
 
+/** โมเดลสำรองเริ่มต้น ใช้เมื่อโมเดลหลักล้มเหลวต่อเนื่อง (ค่าว่าง = ไม่ใช้โมเดลสำรอง) */
+export const DEFAULT_FALLBACK_MODELS: Record<AiProvider, string> = {
+  gemini: "gemini-2.5-flash-lite",
+  openai: "",
+  anthropic: "",
+};
+
+export const AI_ATTEMPT_OPTIONS = [1, 2, 3, 4] as const;
+export const AI_TIMEOUT_OPTIONS = [10, 15, 20, 30] as const;
+
 export type ScanMode = "ocr" | "ai";
 export const IMAGE_SIDES = [1280, 1600, 2048] as const;
 export type ImageMaxSide = (typeof IMAGE_SIDES)[number];
@@ -67,6 +77,12 @@ export type AppSettings = {
   fallbackToOcr: boolean;
   /** ด้านที่ยาวที่สุดของรูปที่ส่งให้ AI (พิกเซล) */
   imageMaxSide: ImageMaxSide;
+  /** โมเดลสำรองต่อผู้ให้บริการ ใช้เมื่อโมเดลหลักไม่พร้อม (ว่าง = ปิด) */
+  fallbackModels: Record<AiProvider, string>;
+  /** จำนวนครั้งสูงสุดต่อโมเดลเมื่อเจอ error ชั่วคราว เช่น 503 (รวมครั้งแรก) */
+  aiMaxAttempts: number;
+  /** เวลารอ AI ต่อหนึ่งครั้ง (วินาที) */
+  aiTimeoutSec: number;
 };
 
 export function defaultSettings(): AppSettings {
@@ -77,6 +93,9 @@ export function defaultSettings(): AppSettings {
     models: { ...DEFAULT_MODELS },
     fallbackToOcr: true,
     imageMaxSide: 1600,
+    fallbackModels: { ...DEFAULT_FALLBACK_MODELS },
+    aiMaxAttempts: 3,
+    aiTimeoutSec: 15,
   };
 }
 
@@ -97,6 +116,12 @@ export function loadSettings(): AppSettings {
     if (p.scanMode === "ai" || p.scanMode === "ocr") base.scanMode = p.scanMode;
     if (isProvider(p.provider)) base.provider = p.provider;
     if (typeof p.fallbackToOcr === "boolean") base.fallbackToOcr = p.fallbackToOcr;
+    if ((AI_ATTEMPT_OPTIONS as readonly number[]).includes(p.aiMaxAttempts as number)) {
+      base.aiMaxAttempts = p.aiMaxAttempts as number;
+    }
+    if ((AI_TIMEOUT_OPTIONS as readonly number[]).includes(p.aiTimeoutSec as number)) {
+      base.aiTimeoutSec = p.aiTimeoutSec as number;
+    }
     if ((IMAGE_SIDES as readonly number[]).includes(p.imageMaxSide as number)) {
       base.imageMaxSide = p.imageMaxSide as ImageMaxSide;
     }
@@ -105,6 +130,8 @@ export function loadSettings(): AppSettings {
       if (typeof key === "string") base.apiKeys[id] = key;
       const model = p.models?.[id];
       if (typeof model === "string" && model.trim()) base.models[id] = model.trim();
+      const fallback = p.fallbackModels?.[id];
+      if (typeof fallback === "string") base.fallbackModels[id] = fallback.trim();
     }
   } catch {
     // storage ถูกบล็อกหรือ JSON เสีย

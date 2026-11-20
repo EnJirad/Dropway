@@ -1,5 +1,13 @@
 import type { AppSettings } from "@/lib/aiSettings";
-import { composeAddress, type LabelFields } from "@/lib/labelParse";
+import type { LabelFields } from "@/lib/labelParse";
+import { normalizeFields } from "@/lib/scanMerge";
+
+/** เพดานสุดท้ายฝั่งเบราว์เซอร์ เซิร์ฟเวอร์จำกัดเวลารวมของตัวเองไว้ต่ำกว่านี้แล้ว */
+const CLIENT_TIMEOUT_MS = 45_000;
+
+export type AiScanResult =
+  | { ok: true; fields: LabelFields; model: string | null; usedFallback: boolean }
+  | { ok: false; code: string; message: string };
 
 /** ย่อรูปให้ด้านยาวสุดไม่เกิน maxSide แล้วแปลงเป็น JPEG base64 (ไม่มี prefix data:) */
 async function imageToBase64(file: File, maxSide: number): Promise<string> {
@@ -25,36 +33,68 @@ async function imageToBase64(file: File, maxSide: number): Promise<string> {
   }
 }
 
-/** ส่งรูปฉลากให้ AI ตามค่าตั้งค่า แล้วคืนช่องข้อมูลผู้รับ (throw Error พร้อมข้อความภาษาไทยถ้าไม่สำเร็จ) */
-export async function readLabelWithAi(file: File, settings: AppSettings): Promise<LabelFields> {
-  const image = await imageToBase64(file, settings.imageMaxSide);
-  const res = await fetch("/api/ai/label", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      provider: settings.provider,
-      apiKey: settings.apiKeys[settings.provider],
-      model: settings.models[settings.provider],
-      image,
-      mimeType: "image/jpeg",
-    }),
-  });
-  const json = (await res.json().catch(() => ({}))) as {
-    error?: string;
-    fields?: LabelFields;
-  };
-  if (!res.ok || !json.fields) throw new Error(json.error || "เรียก AI ไม่สำเร็จ");
-  return json.fields;
-}
+type LabelResponse = {
+  error?: string;
+  code?: string;
+  attempts?: number;
+  fields?: unknown;
+  model?: string;
+  usedFallback?: boolean;
+};
 
-/** แปลงช่องที่ AI อ่านได้เป็นข้อความ เพื่อส่งเข้าตัวเทียบบ้านชุดเดิม */
-export function fieldsToText(f: LabelFields): string {
-  return [
-    f.name,
-    composeAddress(f),
-    f.phone,
-    f.tracking ? `เลขพัสดุ ${f.tracking}` : "",
-  ]
-    .filter((s) => s.trim())
-    .join("\n");
+/**
+ * ส่งรูปฉลากให้ AI ตามค่าตั้งค่า ฟังก์ชันนี้ไม่ throw: ถ้า AI ใช้ไม่ได้จะคืน { ok: false }
+ * เพื่อให้หน้าสแกนเก็บผล OCR ไว้และให้ผู้ใช้แก้ข้อมูลต่อได้
+ */
+export async function readLabelWithAi(file: File, settings: AppSettings): Promise<AiScanResult> {
+  let image: string;
+  try {
+    image = await imageToBase64(file, settings.imageMaxSide);
+  } catch {
+    return { ok: false, code: "AI_IMAGE", message: "เตรียมรูปส่งให้ AI ไม่ได้" };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
+  try {
+    const res = await fetch("/api/ai/label", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        provider: settings.provider,
+        apiKey: settings.apiKeys[settings.provider],
+        model: settings.models[settings.provider],
+        fallbackModel: settings.fallbackModels[settings.provider],
+        maxAttempts: settings.aiMaxAttempts,
+        timeoutMs: settings.aiTimeoutSec * 1000,
+        image,
+        mimeType: "image/jpeg",
+      }),
+    });
+    const json = (await res.json().catch(() => null)) as LabelResponse | null;
+    if (!res.ok || !json || !json.fields) {
+      const tried =
+        json && typeof json.attempts === "number" && json.attempts > 1
+          ? ` ลองแล้ว ${json.attempts} ครั้ง`
+          : "";
+      const base = json?.error || `AI ตอบกลับไม่ได้ (HTTP ${res.status})`;
+      return { ok: false, code: json?.code || "AI_UNAVAILABLE", message: `${base}${tried}` };
+    }
+    return {
+      ok: true,
+      fields: normalizeFields(json.fields),
+      model: typeof json.model === "string" ? json.model : null,
+      usedFallback: json.usedFallback === true,
+    };
+  } catch (e) {
+    const aborted = e instanceof Error && e.name === "AbortError";
+    return {
+      ok: false,
+      code: aborted ? "AI_TIMEOUT" : "AI_UNAVAILABLE",
+      message: aborted ? "AI ตอบช้าเกินกำหนด" : "เชื่อมต่อ AI ไม่ได้",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }

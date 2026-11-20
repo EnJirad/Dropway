@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_MODELS, PROVIDER_IDS, type AiProvider } from "@/lib/aiSettings";
+import { ProviderError, providerErrorFromHttp, resolveRetryConfig } from "@/lib/aiRetry";
+import { runWithResilience } from "@/lib/aiResilience";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -27,12 +29,14 @@ type Fields = {
   tracking: string;
 };
 
-class ProviderError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
+const MODEL_RE = /^[\w.\-:]{1,80}$/;
+
+function badResponse(): ProviderError {
+  return new ProviderError("AI ตอบกลับในรูปแบบที่อ่านไม่ได้", {
+    code: "AI_BAD_RESPONSE",
+    status: 502,
+    retryable: false,
+  });
 }
 
 function str(v: unknown): string {
@@ -42,12 +46,12 @@ function str(v: unknown): string {
 function parseFields(text: string): Fields {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new ProviderError("AI ตอบกลับในรูปแบบที่อ่านไม่ได้", 502);
+  if (start < 0 || end <= start) throw badResponse();
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
   } catch {
-    throw new ProviderError("AI ตอบกลับในรูปแบบที่อ่านไม่ได้", 502);
+    throw badResponse();
   }
   const postal = str(obj.postalCode).replace(/\D/g, "");
   return {
@@ -70,24 +74,23 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
+// detail ใช้จำแนกชนิด error เท่านั้น ไม่ใส่ในข้อความที่ส่งกลับหรือ log
 function httpError(provider: string, res: Response, detail: string): ProviderError {
-  if (res.status === 401 || res.status === 403) {
-    return new ProviderError(`API key ของ ${provider} ไม่ถูกต้องหรือไม่มีสิทธิ์`, 401);
-  }
-  if (res.status === 429) {
-    return new ProviderError(`${provider}: ใช้งานเกินโควตาหรือเครดิตหมด ลองใหม่ภายหลัง`, 429);
-  }
-  if (res.status === 400 && /api key/i.test(detail)) {
-    return new ProviderError(`API key ของ ${provider} ไม่ถูกต้อง`, 401);
-  }
-  return new ProviderError(`${provider} ตอบกลับผิดพลาด (${res.status}) ${detail}`.trim(), 502);
+  return providerErrorFromHttp(provider, res.status, detail);
 }
 
-async function callGemini(key: string, model: string, mime: string, b64: string): Promise<string> {
+async function callGemini(
+  key: string,
+  model: string,
+  mime: string,
+  b64: string,
+  signal: AbortSignal,
+): Promise<string> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
       method: "POST",
+      signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: mime, data: b64 } }] }],
@@ -102,9 +105,16 @@ async function callGemini(key: string, model: string, mime: string, b64: string)
   return j.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
 }
 
-async function callOpenAI(key: string, model: string, mime: string, b64: string): Promise<string> {
+async function callOpenAI(
+  key: string,
+  model: string,
+  mime: string,
+  b64: string,
+  signal: AbortSignal,
+): Promise<string> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model,
@@ -126,9 +136,16 @@ async function callOpenAI(key: string, model: string, mime: string, b64: string)
   return j.choices?.[0]?.message?.content ?? "";
 }
 
-async function callAnthropic(key: string, model: string, mime: string, b64: string): Promise<string> {
+async function callAnthropic(
+  key: string,
+  model: string,
+  mime: string,
+  b64: string,
+  signal: AbortSignal,
+): Promise<string> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       "x-api-key": key,
@@ -183,13 +200,30 @@ export async function POST(request: NextRequest) {
 
     const call =
       provider === "gemini" ? callGemini : provider === "openai" ? callOpenAI : callAnthropic;
-    const text = await call(apiKey, model, mime, image);
-    return NextResponse.json({ fields: parseFields(text) });
+    const fallbackRaw = typeof body.fallbackModel === "string" ? body.fallbackModel.trim() : "";
+    const fallbackModel = MODEL_RE.test(fallbackRaw) ? fallbackRaw : "";
+    const config = resolveRetryConfig({ maxAttempts: body.maxAttempts, timeoutMs: body.timeoutMs });
+
+    const result = await runWithResilience({
+      models: [model, fallbackModel],
+      config,
+      call: async (m, signal) => parseFields(await call(apiKey, m, mime, image, signal)),
+      // log เฉพาะข้อมูลทางเทคนิค ไม่มี key รูป หรือข้อมูลผู้รับ
+      onAttempt: (info) => console.warn("[ai/label] attempt", JSON.stringify({ provider, ...info })),
+    });
+    return NextResponse.json({
+      fields: result.value,
+      model: result.model,
+      usedFallback: result.usedFallback,
+    });
   } catch (error) {
     if (error instanceof ProviderError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { error: error.message, code: error.code, attempts: error.attempts },
+        { status: error.status },
+      );
     }
-    console.error("API /api/ai/label error:", error instanceof Error ? error.message : "unknown");
-    return NextResponse.json({ error: "เรียก AI ไม่สำเร็จ" }, { status: 500 });
+    console.error("API /api/ai/label error:", error instanceof Error ? error.name : "unknown");
+    return NextResponse.json({ error: "เรียก AI ไม่สำเร็จ", code: "AI_UNAVAILABLE" }, { status: 500 });
   }
 }

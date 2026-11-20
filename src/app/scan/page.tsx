@@ -22,9 +22,16 @@ import {
 import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
 import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
-import { composeAddress, parseLabel, type LabelFields } from "@/lib/labelParse";
+import { composeAddress, type LabelFields } from "@/lib/labelParse";
 import { isAiReady, loadSettings } from "@/lib/aiSettings";
-import { fieldsToText, readLabelWithAi } from "@/lib/aiScan";
+import { readLabelWithAi } from "@/lib/aiScan";
+import {
+  buildScanOutcome,
+  describeScanStatus,
+  hasAnyField,
+  type AiInput,
+  type ScanNotice,
+} from "@/lib/scanMerge";
 
 const DRAFT_FIELDS: { key: keyof LabelFields; label: string }[] = [
   { key: "name", label: "ชื่อผู้รับ" },
@@ -216,6 +223,8 @@ export default function ScanPage() {
   const [ocrBusy, setOcrBusy] = useState(false);
   // ข้อมูลที่แยกจากฉลาก (แก้ไขได้ก่อนเพิ่มเข้านำทางวันนี้)
   const [draft, setDraft] = useState<LabelFields | null>(null);
+  // สถานะการอ่านฉลาก (เช่น AI ใช้ไม่ได้แต่ OCR สำเร็จ)
+  const [notice, setNotice] = useState<ScanNotice | null>(null);
 
   const [manualCode, setManualCode] = useState("");
   const [adding, setAdding] = useState(false);
@@ -265,50 +274,52 @@ export default function ScanPage() {
       handlingRef.current = true;
       setOcrBusy(true);
       setDraft(null);
+      setNotice(null);
       setResult(null);
       setNotFound(false);
       setAdded(false);
       try {
-        let text = "";
-        let aiFields: LabelFields | null = null;
-
-        // โหมด AI (ตั้งค่าในหน้า "ตั้งค่า") ถ้าไม่สำเร็จและเปิดตัวเลือกสำรอง ให้ใช้ OCR ต่อ
+        // โหมด AI (ตั้งค่าในหน้า "ตั้งค่า") readLabelWithAi ไม่ throw: ล้มเหลวจะได้ { ok: false }
         const settings = loadSettings();
-        if (isAiReady(settings)) {
+        const useAi = isAiReady(settings);
+        let ai: AiInput = null;
+        if (useAi) {
+          const r = await readLabelWithAi(file, settings);
+          ai = r.ok ? { ok: true, fields: r.fields } : { ok: false, message: r.message };
+        }
+        const aiGood = !!ai && ai.ok && hasAnyField(buildScanOutcome({ ai }).fields);
+
+        // OCR ในเครื่อง: ข้ามเมื่อ AI อ่านได้แล้ว หรือผู้ใช้ปิด OCR สำรองไว้
+        let ocrText = "";
+        let ocrFailed = false;
+        const ocrSkipped = useAi && (aiGood || !settings.fallbackToOcr);
+        if (!ocrSkipped) {
           try {
-            const fields = await readLabelWithAi(file, settings);
-            const aiText = fieldsToText(fields);
-            if (!aiText.trim()) throw new Error("AI อ่านข้อมูลจากรูปไม่ได้");
-            aiFields = fields;
-            text = aiText;
-          } catch (aiError) {
-            const message = aiError instanceof Error ? aiError.message : "เรียก AI ไม่สำเร็จ";
-            if (!settings.fallbackToOcr) {
-              setNotFound(true);
-              toast.error(message);
-              return;
+            const { createWorker } = await import("tesseract.js");
+            const worker = await createWorker(["tha", "eng"]);
+            try {
+              const out = await worker.recognize(file);
+              ocrText = out?.data?.text ?? "";
+            } finally {
+              await worker.terminate();
             }
-            toast.error(`${message} ใช้ OCR แทน`);
+          } catch (ocrError) {
+            ocrFailed = true;
+            console.error("OCR error:", ocrError instanceof Error ? ocrError.name : "unknown");
           }
         }
 
-        if (!aiFields) {
-          const { createWorker } = await import("tesseract.js");
-          const worker = await createWorker(["tha", "eng"]);
-          try {
-            const out = await worker.recognize(file);
-            text = out.data.text;
-          } finally {
-            await worker.terminate();
-          }
-        }
+        const outcome = buildScanOutcome({ ocrText, ocrFailed, ocrSkipped, ai });
+        const text = outcome.text;
+        setNotice(describeScanStatus(outcome));
+        // ช่องที่อ่านไม่ได้เป็นค่าว่าง ผู้ใช้กรอกเองได้เสมอ
+        setDraft(outcome.fields);
         if (!text.trim()) {
           setNotFound(true);
-          toast.error("อ่านข้อความจากรูปไม่ได้ ลองถ่ายให้ชัดขึ้น");
+          toast.error("อ่านข้อมูลจากรูปไม่ได้ กรอกข้อมูลเองหรือถ่ายใหม่");
           return;
         }
         setLastCode(text.replace(/\s+/g, " ").trim().slice(0, 200));
-        setDraft(aiFields ?? parseLabel(text));
         const found = await applyIdentify(text);
         if (found) {
           toast.success("พบบ้านแล้ว");
@@ -414,6 +425,7 @@ export default function ScanPage() {
     setLastCode("");
     setAdded(false);
     setDraft(null);
+    setNotice(null);
     setCandidates([]);
     setTracking(null);
 
@@ -700,6 +712,20 @@ export default function ScanPage() {
           )}
         </div>
       </section>
+
+      {notice && (
+        <div
+          role="status"
+          className={`mt-4 flex items-start gap-2 rounded-xl border p-3 text-sm ${
+            notice.tone === "error"
+              ? "border-red-200 bg-red-50 text-red-900"
+              : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+          <span>{notice.text}</span>
+        </div>
+      )}
 
       {candidates.length > 0 && (
         <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
