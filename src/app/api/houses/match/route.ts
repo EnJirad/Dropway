@@ -25,19 +25,9 @@ export async function POST(request: NextRequest) {
     const sql = getDb();
 
     const tracking = extractTracking(text);
-    let trackedHouseId: string | null = null;
-    if (tracking) {
-      const rows = await sql`
-        SELECT house_id FROM public.user_navigation_houses
-        WHERE upper(tracking_number) = ${tracking}
-        ORDER BY created_at DESC
-        LIMIT 1;
-      `;
-      trackedHouseId = rows[0]?.house_id ? String(rows[0].house_id) : null;
-    }
 
     const houses = (await sql`SELECT * FROM public.houses;`) as unknown as House[];
-    const candidates = matchHouses(houses, text, trackedHouseId);
+    const candidates = matchHouses(houses, text);
 
     return NextResponse.json({ candidates, tracking, count: candidates.length });
   } catch (error) {
