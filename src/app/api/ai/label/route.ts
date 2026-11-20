@@ -1,35 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_MODELS, PROVIDER_IDS, type AiProvider } from "@/lib/aiSettings";
 import { ProviderError, providerErrorFromHttp, resolveRetryConfig } from "@/lib/aiRetry";
-import { runWithResilience } from "@/lib/aiResilience";
+import { buildKeySlots, isKeyProblem } from "@/lib/aiKeys";
+import { runWithResilience, type ResilienceResult } from "@/lib/aiResilience";
+import { LABEL_JSON_SCHEMA, LABEL_PROMPT, buildFocusPrompt } from "@/lib/labelPrompt";
+import type { LabelFields } from "@/lib/labelParse";
+import {
+  cleanFields,
+  criticalGaps,
+  readConfidence,
+  type ConfidenceMap,
+  type FieldKey,
+} from "@/lib/labelValidate";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const MAX_IMAGE_CHARS = 6_000_000; // base64 ~4.5MB
 
-const PROMPT = `คุณคือผู้อ่านฉลากพัสดุของไทย อ่านรูปแล้วดึงข้อมูลของ "ผู้รับ" เท่านั้น (ไม่ใช่ผู้ส่ง)
-ตอบเป็น JSON อย่างเดียว ห้ามมีข้อความอื่น ตามรูปแบบนี้:
-{"name":"","phone":"","houseNo":"","address":"","postalCode":"","tracking":""}
-กติกา:
-- name: ชื่อผู้รับ (รวมคำนำหน้าถ้ามี)
-- phone: เบอร์โทรผู้รับ เฉพาะตัวเลข
-- houseNo: บ้านเลขที่ เช่น 12/3
-- address: ที่อยู่ผู้รับเต็ม ไม่ใส่ชื่อ เบอร์ หรือรหัสไปรษณีย์ ใส่หมู่ ซอย ถนน ตำบล อำเภอ จังหวัด
-- postalCode: รหัสไปรษณีย์ 5 หลัก
-- tracking: เลขพัสดุ
-- ช่องที่อ่านไม่ออกหรือไม่แน่ใจให้เป็น "" ห้ามเดาหรือแต่งข้อมูล`;
-
-type Fields = {
-  name: string;
-  phone: string;
-  houseNo: string;
-  address: string;
-  postalCode: string;
-  tracking: string;
-};
-
 const MODEL_RE = /^[\w.\-:]{1,80}$/;
+
+type ReadResult = { fields: LabelFields; confidence: ConfidenceMap };
 
 function badResponse(): ProviderError {
   return new ProviderError("AI ตอบกลับในรูปแบบที่อ่านไม่ได้", {
@@ -43,7 +34,8 @@ function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "";
 }
 
-function parseFields(text: string): Fields {
+/** ตัดเฉพาะก้อน JSON แรกแล้วทำความสะอาดทุกช่อง (ค่าที่ผิดรูปจะกลายเป็น "") */
+function parseResult(text: string): ReadResult {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end <= start) throw badResponse();
@@ -53,15 +45,15 @@ function parseFields(text: string): Fields {
   } catch {
     throw badResponse();
   }
-  const postal = str(obj.postalCode).replace(/\D/g, "");
-  return {
+  const raw = {
     name: str(obj.name),
-    phone: str(obj.phone).replace(/[^\d]/g, ""),
+    phone: str(obj.phone),
     houseNo: str(obj.houseNo),
     address: str(obj.address),
-    postalCode: /^\d{5}$/.test(postal) ? postal : "",
-    tracking: str(obj.tracking).replace(/\s+/g, ""),
+    postalCode: str(obj.postalCode),
+    tracking: str(obj.tracking),
   };
+  return { fields: cleanFields(raw), confidence: readConfidence(obj) };
 }
 
 async function readError(res: Response): Promise<string> {
@@ -85,11 +77,15 @@ async function callGemini(
   mime: string,
   b64: string,
   signal: AbortSignal,
+  prompt: string,
 ): Promise<string> {
   // โมเดล 2.5+ คิดก่อนตอบ (thinking) ทำให้ช้า — ปิดเมื่อโมเดลรองรับ
   const generationConfig: Record<string, unknown> = {
     temperature: 0,
     responseMimeType: "application/json",
+    // บังคับโครงคำตอบก่อนถึงชั้น parse: ชนิดข้อมูลถูก ไม่มี markdown หลุด
+    responseSchema: LABEL_JSON_SCHEMA,
+    maxOutputTokens: 700,
   };
   if (/gemini-(2\.5|3)/i.test(model)) {
     generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -101,7 +97,7 @@ async function callGemini(
       signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: mime, data: b64 } }] }],
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
         generationConfig,
       }),
     },
@@ -119,6 +115,7 @@ async function callOpenAI(
   mime: string,
   b64: string,
   signal: AbortSignal,
+  prompt: string,
 ): Promise<string> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -127,13 +124,13 @@ async function callOpenAI(
     body: JSON.stringify({
       model,
       temperature: 0,
-      max_tokens: 400,
+      max_tokens: 600,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "user",
           content: [
-            { type: "text", text: PROMPT },
+            { type: "text", text: prompt },
             { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
           ],
         },
@@ -151,6 +148,7 @@ async function callAnthropic(
   mime: string,
   b64: string,
   signal: AbortSignal,
+  prompt: string,
 ): Promise<string> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -162,14 +160,14 @@ async function callAnthropic(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 600,
+      max_tokens: 700,
       temperature: 0,
       messages: [
         {
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
-            { type: "text", text: PROMPT },
+            { type: "text", text: prompt },
           ],
         },
       ],
@@ -180,17 +178,46 @@ async function callAnthropic(
   return j.content?.filter((c) => c.type === "text").map((c) => c.text ?? "").join("") ?? "";
 }
 
+/** เติมเฉพาะช่องที่ขาดจากรอบสอง ไม่ทับค่าที่อ่านได้แล้ว */
+function fillGaps(
+  base: LabelFields,
+  extra: LabelFields,
+  gaps: FieldKey[],
+): LabelFields {
+  const out: LabelFields = { ...base };
+  for (const key of gaps) {
+    const value = extra[key];
+    if (!value) continue;
+    if (key === "address") {
+      // ที่อยู่รอบสองใช้ได้เฉพาะเมื่อยาวกว่าของเดิม (กันที่อยู่สั้นที่ตัดท่อนทิ้ง)
+      if (value.length >= out.address.length) out.address = value;
+      continue;
+    }
+    if (!out[key]) out[key] = value;
+  }
+  return out;
+}
+
 // POST /api/ai/label - ส่งรูปฉลากให้ AI อ่านแล้วคืนช่องข้อมูลผู้รับ
 // key ใช้เฉพาะคำขอนี้ ไม่บันทึกและไม่เขียน log
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const provider = body.provider as AiProvider;
-    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    // key มาจาก header เป็นหลัก (ไม่ปนใน JSON body ที่อาจถูก log โดย proxy)
+    // ยังอ่านจาก body ได้เพื่อความเข้ากันได้กับไคลเอนต์รุ่นเก่า
+    const headerKey = request.headers.get("x-ai-key");
+    const headerBackup = request.headers.get("x-ai-key-backup");
+    const apiKey =
+      (typeof headerKey === "string" && headerKey.trim()) ||
+      (typeof body.apiKey === "string" ? body.apiKey.trim() : "");
+    const backupApiKey =
+      (typeof headerBackup === "string" && headerBackup.trim()) ||
+      (typeof body.backupApiKey === "string" ? body.backupApiKey.trim() : "");
     const image = typeof body.image === "string" ? body.image : "";
     const mime = typeof body.mimeType === "string" ? body.mimeType : "image/jpeg";
     const model =
-      typeof body.model === "string" && /^[\w.\-:]{1,80}$/.test(body.model)
+      typeof body.model === "string" && MODEL_RE.test(body.model)
         ? body.model
         : DEFAULT_MODELS[provider as AiProvider];
 
@@ -213,18 +240,99 @@ export async function POST(request: NextRequest) {
     const fallbackModel = MODEL_RE.test(fallbackRaw) ? fallbackRaw : "";
     const config = resolveRetryConfig({ maxAttempts: body.maxAttempts, timeoutMs: body.timeoutMs });
 
-    const result = await runWithResilience({
-      models: [model, fallbackModel],
-      config,
-      call: async (m, signal) => parseFields(await call(apiKey, m, mime, image, signal)),
-      // log เฉพาะข้อมูลทางเทคนิค ไม่มี key รูป หรือข้อมูลผู้รับ
-      onAttempt: (info) => console.warn("[ai/label] attempt", JSON.stringify({ provider, ...info })),
-    });
-    return NextResponse.json({
-      fields: result.value,
-      model: result.model,
-      usedFallback: result.usedFallback,
-    });
+    // ลำดับ key: หลักก่อน แล้วค่อยสำรอง — สลับเมื่อ key หลักติดโควตาหรือสิทธิ์
+    const keys = buildKeySlots(apiKey, backupApiKey);
+    if (!keys.length) {
+      return NextResponse.json({ error: "ยังไม่ได้ใส่ API key" }, { status: 400 });
+    }
+
+    let first: ResilienceResult<ReadResult> | null = null;
+    let usedBackupKey = false;
+    let keyIndexUsed = 0;
+    let lastKeyError: ProviderError | null = null;
+
+    for (let i = 0; i < keys.length; i++) {
+      try {
+        first = await runWithResilience({
+          models: [model, fallbackModel],
+          config,
+          call: async (m, signal) =>
+            parseResult(await call(keys[i].key, m, mime, image, signal, LABEL_PROMPT)),
+          // log เฉพาะข้อมูลทางเทคนิค ไม่มี key รูป หรือข้อมูลผู้รับ
+          onAttempt: (info) =>
+            console.warn(
+              "[ai/label] attempt",
+              JSON.stringify({ provider, keySlot: keys[i].slot, ...info }),
+            ),
+        });
+        keyIndexUsed = i;
+        usedBackupKey = i > 0;
+        break;
+      } catch (e) {
+        if (!(e instanceof ProviderError)) throw e;
+        lastKeyError = e;
+        // สลับไป key สำรองเฉพาะเมื่อปัญหาอยู่ที่ key ไม่ใช่ที่เน็ต/เซิร์ฟเวอร์ผู้ให้บริการ
+        const keyProblem = isKeyProblem(e);
+        if (!keyProblem || i === keys.length - 1) throw e;
+        console.warn("[ai/label] primary key unavailable, switching to backup", e.code);
+      }
+    }
+    if (!first) {
+      throw (
+        lastKeyError ??
+        new ProviderError("AI ไม่พร้อมใช้งาน", {
+          code: "AI_UNAVAILABLE",
+          status: 503,
+          retryable: true,
+        })
+      );
+    }
+
+    let fields = first.value.fields;
+    let modelUsed = first.model;
+    const usedFallback = first.usedFallback;
+    let confidence = first.value.confidence;
+    const callKey = keys[keyIndexUsed].key;
+
+    // รอบสอง: อ่านซ้ำเฉพาะช่องสำคัญที่ยังขาด/ผิดรูป (จำกัดเวลาและครั้ง)
+    // ไม่ยิงเพิ่มเพียงเพราะไม่มีเลขพัสดุ — ใบหลายใบไม่มีเลขนี้พิมพ์อยู่ และการยิงซ้ำมีต้นทุน
+    const gaps = criticalGaps(fields);
+    const worthRetry = gaps.some((k) => k !== "tracking");
+    if (worthRetry) {
+      try {
+        const focus = await runWithResilience({
+          models: [first.model],
+          config: {
+            ...config,
+            maxAttempts: 1,
+            timeoutMs: Math.min(config.timeoutMs, 12_000),
+            totalBudgetMs: Math.min(config.totalBudgetMs, 14_000),
+          },
+          call: async (m, signal) =>
+            parseResult(await call(callKey, m, mime, image, signal, buildFocusPrompt(gaps))),
+        });
+        fields = fillGaps(fields, focus.value.fields, gaps);
+        confidence = { ...confidence, ...focus.value.confidence };
+        modelUsed = focus.model;
+      } catch (e) {
+        // รอบสองล้มเหลวไม่ทำให้คำขอแรกเสีย — คืนผลรอบแรกพร้อมบอกช่องที่ยังขาด
+        if (!(e instanceof ProviderError)) throw e;
+        console.warn("[ai/label] focus pass failed", e.code);
+      }
+    }
+
+    const finalFields = cleanFields(fields);
+    return NextResponse.json(
+      {
+        fields: finalFields,
+        model: modelUsed,
+        usedFallback,
+        usedBackupKey,
+        missing: criticalGaps(finalFields),
+        confidence,
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     if (error instanceof ProviderError) {
       return NextResponse.json(

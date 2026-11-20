@@ -1,4 +1,5 @@
 import { composeAddress, parseLabel, type LabelFields } from "@/lib/labelParse";
+import { cleanFields, invalidFields, readConfidence } from "@/lib/labelValidate";
 
 const KEYS: (keyof LabelFields)[] = ["name", "phone", "houseNo", "address", "postalCode", "tracking"];
 
@@ -12,24 +13,40 @@ function asText(v: unknown): string {
   return "";
 }
 
-/** รับค่าอะไรก็ได้ (undefined, null, ขาดบางช่อง) แล้วคืนช่องครบทุกตัวเป็นสตริงเสมอ */
+/** รับค่าอะไรก็ได้ (undefined, null, ขาดบางช่อง) แล้วคืนช่องครบทุกตัวที่ "ผ่านการทำความสะอาด" แล้ว */
 export function normalizeFields(v: unknown): LabelFields {
-  const o = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
-  const out = emptyFields();
-  for (const k of KEYS) out[k] = asText(o[k]);
-  return out;
+  return cleanFields(v);
 }
 
 export function hasAnyField(f: LabelFields): boolean {
   return KEYS.some((k) => f[k] !== "");
 }
 
-/** รวมผล: ช่องที่ AI อ่านได้ใช้ของ AI ช่องที่ AI ว่างเว้นไว้ใช้ของ OCR ไม่ให้ค่าว่างทับของที่อ่านได้แล้ว */
-export function mergeFields(ai: unknown, ocr: unknown): LabelFields {
+/**
+ * รวมผลแบบรู้ทันความมั่นใจ: ช่องที่ AI อ่านได้และผ่านการตรวจจะชนะ
+ * ยกเว้น AI ระบุ confidence = low และ OCR มีค่าที่ผ่านการตรวจ — ให้ใช้ของ OCR
+ * ช่องที่ AI ส่งมาแต่ผิดรูป (เบอร์ 9 หลัก, tracking ทั้งบรรทัด) จะไม่ทับของ OCR
+ */
+export function mergeFields(
+  ai: unknown,
+  ocr: unknown,
+  confidence?: Record<string, string>,
+): LabelFields {
   const a = normalizeFields(ai);
   const o = normalizeFields(ocr);
+  const aiBad = invalidFields(a);
+  const ocrBad = invalidFields(o);
   const out = emptyFields();
-  for (const k of KEYS) out[k] = a[k] || o[k];
+  for (const k of KEYS) {
+    const aiValue = a[k];
+    const ocrValue = o[k];
+    const aiOk = aiValue !== "" && aiBad.indexOf(k) < 0;
+    const ocrOk = ocrValue !== "" && ocrBad.indexOf(k) < 0;
+    const aiLow = confidence?.[k] === "low";
+    if (aiOk && !(aiLow && ocrOk)) out[k] = aiValue;
+    else if (ocrOk) out[k] = ocrValue;
+    else out[k] = aiValue || ocrValue;
+  }
   return out;
 }
 
@@ -41,7 +58,7 @@ export function fieldsToText(f: LabelFields): string {
 }
 
 export type AiInput =
-  | { ok: true; fields?: unknown }
+  | { ok: true; fields?: unknown; confidence?: unknown }
   | { ok: false; message?: string }
   | null
   | undefined;
@@ -92,7 +109,11 @@ export function buildScanOutcome(input: {
     aiMessage = asText(ai.message);
   }
 
-  const fields = mergeFields(aiFields, ocrFields);
+  const fields = mergeFields(
+    aiFields,
+    ocrFields,
+    ai && ai.ok ? readConfidence(ai.confidence) : undefined,
+  );
   const hasOcr = ocrFields !== null && hasAnyField(ocrFields);
   const source: ScanOutcome["source"] = aiFields
     ? hasOcr

@@ -35,3 +35,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# agent scratch / downloaded reference bundles (may contain secrets)
+.harness/
+*.log

@@ -21,6 +21,15 @@ console.log(`${colors.bold}${colors.cyan}=======================================
 
 let hasError = false;
 
+// 0. ตรวจหา secret ที่หลุดเข้า repo (ต้องผ่านก่อน push ทุกครั้ง)
+console.log(`${colors.bold}0. ตรวจหา API key/secret ในไฟล์ที่ git ติดตาม...${colors.reset}`);
+try {
+  execSync('node scripts/scan-secrets.mjs', { stdio: 'inherit' });
+} catch (e) {
+  console.log(`   ${colors.red}✗ พบ secret ในโปรเจกต์ — ลบและ rotate key ก่อน push${colors.reset}\n`);
+  hasError = true;
+}
+
 // 1. ตรวจสอบ TypeScript Types
 console.log(`${colors.bold}1. ตรวจสอบ TypeScript Types...${colors.reset}`);
 try {

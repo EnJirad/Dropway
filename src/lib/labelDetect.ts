@@ -36,6 +36,14 @@ export function looksLikeLabel(a: FrameAnalysis): boolean {
   );
 }
 
+/**
+ * จ่อใกล้เกินไป: กระดาษขาวกินเกือบทั้งกรอบ จนตัวอักษรริมใบหลุดออกนอกภาพ
+ * ใช้แยกจาก "ยังไม่เจอใบ" เพื่อบอกผู้ใช้ให้ถอยกล้องแทนการรอเงียบ ๆ
+ */
+export function looksTooClose(a: FrameAnalysis): boolean {
+  return a.mean > 168 && a.whiteRatio > 0.9;
+}
+
 /** ความต่างเฉลี่ยของสองเฟรม (0 = นิ่งสนิท) */
 export function frameDifference(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
   const length = Math.min(a.length, b.length);
