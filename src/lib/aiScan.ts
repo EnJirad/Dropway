@@ -1,12 +1,22 @@
 import type { AppSettings } from "@/lib/aiSettings";
 import type { LabelFields } from "@/lib/labelParse";
+import type { ConfidenceMap } from "@/lib/labelValidate";
 import { normalizeFields } from "@/lib/scanMerge";
 
 /** เพดานสุดท้ายฝั่งเบราว์เซอร์ เซิร์ฟเวอร์จำกัดเวลารวมของตัวเองไว้ต่ำกว่านี้แล้ว */
 const CLIENT_TIMEOUT_MS = 25_000;
 
 export type AiScanResult =
-  | { ok: true; fields: LabelFields; model: string | null; usedFallback: boolean }
+  | {
+      ok: true;
+      fields: LabelFields;
+      model: string | null;
+      usedFallback: boolean;
+      /** ระดับความมั่นใจต่อช่องที่ AI รายงานมา (ใช้ตัดสินตอนรวมผลกับ OCR) */
+      confidence: ConfidenceMap;
+      /** ช่องสำคัญที่ยังขาดหลังอ่านซ้ำแล้ว (ไว้เตือนผู้ใช้ให้ตรวจ) */
+      missing: string[];
+    }
   | { ok: false; code: string; message: string };
 
 /** ย่อรูปให้ด้านยาวสุดไม่เกิน maxSide แล้วแปลงเป็น JPEG base64 (ไม่มี prefix data:) */
@@ -40,6 +50,8 @@ type LabelResponse = {
   fields?: unknown;
   model?: string;
   usedFallback?: boolean;
+  confidence?: unknown;
+  missing?: unknown;
 };
 
 /**
@@ -81,11 +93,25 @@ export async function readLabelWithAi(file: File, settings: AppSettings): Promis
       const base = json?.error || `AI ตอบกลับไม่ได้ (HTTP ${res.status})`;
       return { ok: false, code: json?.code || "AI_UNAVAILABLE", message: `${base}${tried}` };
     }
+    const missing = Array.isArray(json.missing)
+      ? json.missing.filter((k): k is string => typeof k === "string")
+      : [];
+    const rawConfidence =
+      json.confidence && typeof json.confidence === "object"
+        ? (json.confidence as Record<string, unknown>)
+        : {};
+    const confidence: ConfidenceMap = {};
+    for (const k of ["name", "phone", "houseNo", "address", "postalCode", "tracking"] as const) {
+      const v = rawConfidence[k];
+      if (v === "high" || v === "medium" || v === "low") confidence[k] = v;
+    }
     return {
       ok: true,
       fields: normalizeFields(json.fields),
       model: typeof json.model === "string" ? json.model : null,
       usedFallback: json.usedFallback === true,
+      confidence,
+      missing,
     };
   } catch (e) {
     const aborted = e instanceof Error && e.name === "AbortError";

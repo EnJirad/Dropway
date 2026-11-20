@@ -92,7 +92,8 @@ export function defaultSettings(): AppSettings {
     apiKeys: { gemini: "", openai: "", anthropic: "" },
     models: { ...DEFAULT_MODELS },
     fallbackToOcr: true,
-    imageMaxSide: 1280,
+    // 1600px: ตัวอักษรไทยบนใบปะหน้าเล็กกว่าภาษาลาติน ต้องเก็บรายละเอียดมากกว่าภาพตัวอย่างทั่วไป
+    imageMaxSide: 1600,
     fallbackModels: { ...DEFAULT_FALLBACK_MODELS },
     aiMaxAttempts: 2,
     aiTimeoutSec: 15,

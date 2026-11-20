@@ -24,7 +24,9 @@ import {
   analyzeCanvas,
   frameDifference,
   looksLikeLabel,
+  looksTooClose,
 } from "@/lib/labelDetect";
+import { beepCapture, unlockBeep } from "@/lib/beep";
 import { useModalKeyboardBehavior } from "@/lib/viewport";
 import BlockingLoader from "@/components/BlockingLoader";
 import ScanResultSheet, { type ScanPrimary } from "@/components/ScanResultSheet";
@@ -262,9 +264,9 @@ export default function ScanPage() {
   const [lastCode, setLastCode] = useState("");
 
   /** สถานะการตรวจจับใบปะหน้าจากกล้องสด */
-  const [autoStatus, setAutoStatus] = useState<"idle" | "searching" | "holding" | "capturing">(
-    "idle",
-  );
+  const [autoStatus, setAutoStatus] = useState<
+    "idle" | "searching" | "holding" | "capturing" | "stepback"
+  >("idle");
   const [torchOn, setTorchOn] = useState(false);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const cooldownRef = useRef(0);
@@ -372,7 +374,7 @@ export default function ScanPage() {
 
         const ai: AiInput = aiResult
           ? aiResult.ok
-            ? { ok: true, fields: aiResult.fields }
+            ? { ok: true, fields: aiResult.fields, confidence: aiResult.confidence }
             : { ok: false, message: aiResult.message }
           : null;
 
@@ -501,12 +503,14 @@ export default function ScanPage() {
       const diff = prevGray ? frameDifference(prevGray, frame.gray) : 999;
       const moving = diff > 9;
       const label = looksLikeLabel(frame);
+      // กระดาษกินเกือบทั้งกรอบ = จ่อใกล้เกิน ตัวอักษรริมใบหลุด — บอกให้ถอยแทนการรอเงียบ ๆ
+      const tooClose = !label && looksTooClose(frame);
       prevGray = frame.gray;
 
       if (!label) {
         holdStart = 0;
         stillSince = 0;
-        setAutoStatus("searching");
+        setAutoStatus(tooClose ? "stepback" : "searching");
         return;
       }
 
@@ -524,6 +528,8 @@ export default function ScanPage() {
         stillSince = 0;
         busy = true;
         setAutoStatus("capturing");
+        // บี๊บตอนจับภาพ — ผู้ใช้รู้ว่าติดแล้วแม้ไม่มองจอ
+        beepCapture();
         void captureFrame().then((file) => {
           if (!file) {
             busy = false;
@@ -610,6 +616,8 @@ export default function ScanPage() {
         },
       );
       setScanning(true);
+      // ปลุก AudioContext จากการแตะของผู้ใช้ เพื่อให้บี๊บแรกดังเต็มเสียง
+      unlockBeep();
       // ให้วิดีโอเริ่มเล่นก่อนแล้วค่อยตรวจว่าเครื่องนี้มีแฟลชไหม
       window.setTimeout(detectTorch, 600);
     } catch (error) {
@@ -1020,7 +1028,9 @@ export default function ScanPage() {
               className={`h-2 w-2 flex-none rounded-full ${
                 autoStatus === "holding" || autoStatus === "capturing"
                   ? "animate-pulse bg-teal-600"
-                  : "bg-teal-400"
+                  : autoStatus === "stepback"
+                    ? "bg-amber-500"
+                    : "bg-teal-400"
               }`}
               aria-hidden="true"
             />
@@ -1030,7 +1040,9 @@ export default function ScanPage() {
                 ? "ถือไว้อีกนิด ระบบกำลังจะถ่ายให้เอง…"
                 : autoStatus === "capturing"
                   ? "กำลังอ่านฉลาก…"
-                  : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
+                  : autoStatus === "stepback"
+                    ? "จ่อใกล้เกินไป — ถอยกล้องออกให้เห็นขอบใบปะหน้า"
+                    : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
           </div>
 
           {cameraError && (
