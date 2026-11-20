@@ -113,14 +113,12 @@ export async function saveAiSettings(input: SaveAiSettingsInput): Promise<AiSett
   const backupMode =
     input.backupKey === undefined ? "keep" : input.backupKey.trim() ? "set" : "clear";
 
-  if ((primaryMode === "set" || backupMode === "set") && !isKeyEncryptionReady()) {
-    throw new Error("ยังไม่ได้ตั้งค่า AI_KEYS_SECRET จึงยังบันทึก key ลงฐานข้อมูลไม่ได้");
+  if ((primaryMode === "set" || backupMode === "set") && !(await isKeyEncryptionReady())) {
+    throw new Error("ยังเตรียมคีย์เข้ารหัสไม่ได้ (ตรวจการเชื่อมต่อฐานข้อมูล)");
   }
 
-  const primaryEnc =
-    primaryMode === "set" ? encryptSecret(input.apiKey!.trim()) : null;
-  const backupEnc =
-    backupMode === "set" ? encryptSecret(input.backupKey!.trim()) : null;
+  const primaryEnc = primaryMode === "set" ? await encryptSecret(input.apiKey!.trim()) : null;
+  const backupEnc = backupMode === "set" ? await encryptSecret(input.backupKey!.trim()) : null;
   if (primaryMode === "set" && !primaryEnc) throw new Error("เข้ารหัส key ไม่สำเร็จ");
   if (backupMode === "set" && !backupEnc) throw new Error("เข้ารหัส key สำรองไม่สำเร็จ");
 
@@ -201,7 +199,7 @@ export async function getStoredAiKeys(): Promise<{ primary: string; backup: stri
   const row = rows[0];
   if (!row) return { primary: "", backup: "" };
   return {
-    primary: decryptSecret(row.api_key_enc) ?? "",
-    backup: decryptSecret(row.backup_key_enc) ?? "",
+    primary: (await decryptSecret(row.api_key_enc)) ?? "",
+    backup: (await decryptSecret(row.backup_key_enc)) ?? "",
   };
 }
