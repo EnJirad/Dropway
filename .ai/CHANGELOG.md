@@ -1,5 +1,32 @@
 # .ai/CHANGELOG.md
 
+## 2026-11-20 — ย้ายระบบฐานข้อมูลเป็น Neon PostgreSQL และเพิ่มระบบ Auto-Schema On CSV Upload
+
+### หัวข้อ
+- ย้ายการเชื่อมต่อฐานข้อมูลหลักมาเป็น Neon Serverless PostgreSQL ผ่าน `@neondatabase/serverless`
+- เพิ่มระบบ **Auto-Schema Creation:** เมื่ออัปโหลดไฟล์ CSV หากยังไม่มีตารางในฐานข้อมูล ระบบจะสร้างตารางและวิวให้อัตโนมัติทันที
+- เพิ่มชุดข้อมูลบ้านจริง 27 หลังใน ต.แม่ตาว อ.แม่สอด จ.ตาก ทั้งในรูปแบบ `data/sample-houses.csv`, `public/sample-houses.csv`, และ `neon/schema.sql`
+- เพิ่ม Server API Routes ใน `src/app/api/` (`/api/houses`, `/api/houses/upload`, `/api/navigation`, `/api/db/init`)
+- เพิ่มสคริปต์ `npm run test:neon` สำหรับทดสอบการเชื่อมต่อ Neon จาก CLI
+
+### ของเดิมที่ตรวจก่อนแก้
+- ก่อนหน้านี้ใช้ Supabase Client-side SDK เท่านั้น ซึ่งไม่มีฟังก์ชันสร้างตารางอัตโนมัติเมื่อกดอัปโหลด CSV
+- หากยังไม่มีตาราง การอัปโหลด CSV จะล้มเหลวด้วยข้อผิดพลาด `relation houses does not exist`
+
+### เปลี่ยนอะไร
+- `src/lib/db.ts`: เชื่อมต่อ Neon และสร้าง DDL อัตโนมัติ (`ensureDatabaseSchema`)
+- `src/app/api/houses/upload/route.ts`: ตรวจสอบและสร้างตารางอัตโนมัติก่อนบันทึก CSV
+- `src/app/houses/page.tsx`: อัปโหลด CSV ผ่าน Server API เพื่อให้สร้างฐานข้อมูลอัตโนมัติได้
+- `src/app/navigation/page.tsx` และ `src/app/scan/page.tsx`: รองรับทั้ง Neon API และ Supabase
+- `neon/schema.sql` และ `data/sample-houses.csv`: ข้อมูล 27 หลัง อ.แม่สอด จ.ตาก
+- `scripts/test-neon.mjs`: เครื่องมือทดสอบ Neon
+
+### ผลการตรวจสอบ
+- `node node_modules/typescript/bin/tsc --noEmit` → 0 errors
+- `npm run lint` → `✔ No ESLint warnings or errors`
+- Report: `.ai/reports/2026-11-20-neon-database-migration-and-auto-schema.md`
+
+
 ## 2026-11-20 — อัปเกรดระบบฐานข้อมูล Supabase และโครงสร้างเอกสารโปรเจกต์
 
 ### หัวข้อ

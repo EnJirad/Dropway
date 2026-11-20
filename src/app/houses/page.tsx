@@ -548,6 +548,17 @@ export default function HousesPage() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
+        // ตรวจสอบว่าเปิดใช้งานโหมด Neon Database หรือไม่ (ถ้ามี DATABASE_URL ให้เข้าใช้งานได้ทันที)
+        try {
+          const res = await fetch("/api/db/init", { method: "POST" });
+          const json = await res.json();
+          if (res.ok && json.success) {
+            setLoading(false);
+            return;
+          }
+        } catch {
+          // fallback
+        }
         router.push("/login");
       } else {
         setLoading(false);
@@ -647,6 +658,21 @@ export default function HousesPage() {
   const loadHouses = useCallback(async () => {
     setLoading(true);
     setLoadingError(null);
+
+    // 1. ลองดึงข้อมูลผ่าน Neon API ก่อน
+    try {
+      const apiRes = await fetch("/api/houses");
+      const apiJson = await apiRes.json();
+      if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
+        setHouses(apiJson.data);
+        setTotalInDB(apiJson.data.length);
+        setLoading(false);
+        return;
+      }
+    } catch {
+      // fallback to Supabase
+    }
+
     let allHouses: House[] = [];
     let start = 0;
     const pageSize = 1000;
@@ -842,6 +868,18 @@ export default function HousesPage() {
 
   // แก้ฟังก์ชันนี้ทั้งหมด (แทนที่อันเดิม)
   const reloadHouses = async () => {
+    // 1. ลองดึงผ่าน Neon API ก่อน
+    try {
+      const apiRes = await fetch("/api/houses");
+      const apiJson = await apiRes.json();
+      if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
+        setHouses(apiJson.data);
+        setTotalInDB(apiJson.data.length);
+        setLoading(false);
+        return;
+      }
+    } catch {}
+
     let allHouses: House[] = [];
     let start = 0;
     const pageSize = 1000;
@@ -1185,21 +1223,51 @@ export default function HousesPage() {
     setIsSavingHouse(true);
     try {
       if (isAdding) {
-        const { error } = await supabase.from("houses").insert(finalData);
-        if (error) {
-          toast.error("เพิ่มบ้านไม่สำเร็จ: " + error.message);
-          return;
+        let savedViaNeon = false;
+        try {
+          const apiRes = await fetch("/api/houses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(finalData),
+          });
+          const apiJson = await apiRes.json();
+          if (apiRes.ok && apiJson.success) {
+            savedViaNeon = true;
+          }
+        } catch {}
+
+        if (!savedViaNeon) {
+          const { error } = await supabase.from("houses").insert(finalData);
+          if (error) {
+            toast.error("เพิ่มบ้านไม่สำเร็จ: " + error.message);
+            return;
+          }
         }
         toast.success("เพิ่มบ้านสำเร็จ!");
       } else {
         if (!editingHouse) return;
-        const { error } = await supabase
-          .from("houses")
-          .update(finalData)
-          .eq("id", editingHouse.id);
-        if (error) {
-          toast.error("เกิดข้อผิดพลาด: " + error.message);
-          return;
+        let updatedViaNeon = false;
+        try {
+          const apiRes = await fetch(`/api/houses/${editingHouse.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(finalData),
+          });
+          const apiJson = await apiRes.json();
+          if (apiRes.ok && apiJson.success) {
+            updatedViaNeon = true;
+          }
+        } catch {}
+
+        if (!updatedViaNeon) {
+          const { error } = await supabase
+            .from("houses")
+            .update(finalData)
+            .eq("id", editingHouse.id);
+          if (error) {
+            toast.error("เกิดข้อผิดพลาด: " + error.message);
+            return;
+          }
         }
         toast.success("บันทึกสำเร็จ");
       }
@@ -1266,7 +1334,30 @@ export default function HousesPage() {
         return;
       }
 
-      // ตรวจ id ที่มีอยู่แล้วในฐานข้อมูล
+      // 1. ลองนำเข้าผ่าน Server API ก่อน (รองรับ Neon + Auto-create table อัตโนมัติหากยังไม่มี)
+      setImportProgress("กำลังตรวจสอบและนำเข้าข้อมูล (สร้างฐานข้อมูลอัตโนมัติหากยังไม่มี)...");
+      try {
+        const uploadRes = await fetch("/api/houses/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rows),
+        });
+        const uploadResult = await uploadRes.json();
+        if (uploadRes.ok && uploadResult.success) {
+          await loadHouses();
+          const skipped = (uploadResult.duplicates || 0) + invalid;
+          toast.success(
+            `เพิ่ม ${uploadResult.inserted} รายการ${
+              skipped > 0 ? ` • ข้าม ${skipped} รายการ (ซ้ำ/ไม่ถูกต้อง)` : ""
+            }`
+          );
+          return;
+        }
+      } catch (neonErr) {
+        console.warn("Neon upload fallback to Supabase client:", neonErr);
+      }
+
+      // 2. Fallback: ตรวจ id ที่มีอยู่แล้วใน Supabase (กรณีใช้ Supabase เดิม)
       const existingIds = new Set<string>();
       const ids = rows.map((row) => row.id);
       for (let start = 0; start < ids.length; start += 100) {
@@ -1372,21 +1463,32 @@ export default function HousesPage() {
 
     setIsDeletingHouse(true);
     try {
-      const { data, error } = await supabase
-        .from("houses")
-        .delete()
-        .eq("id", house.id)
-        .select();
+      let deletedViaNeon = false;
+      try {
+        const apiRes = await fetch(`/api/houses/${house.id}`, { method: "DELETE" });
+        const apiJson = await apiRes.json();
+        if (apiRes.ok && apiJson.success) {
+          deletedViaNeon = true;
+        }
+      } catch {}
 
-      if (error) {
-        toast.error("ลบไม่สำเร็จ: " + error.message);
-        console.error("Delete error:", error);
-        return;
-      }
+      if (!deletedViaNeon) {
+        const { data, error } = await supabase
+          .from("houses")
+          .delete()
+          .eq("id", house.id)
+          .select();
 
-      if (!data || data.length === 0) {
-        toast.error("ลบไม่สำเร็จ: ไม่มีสิทธิ์หรือไม่พบข้อมูล");
-        return;
+        if (error) {
+          toast.error("ลบไม่สำเร็จ: " + error.message);
+          console.error("Delete error:", error);
+          return;
+        }
+
+        if (!data || data.length === 0) {
+          toast.error("ลบไม่สำเร็จ: ไม่มีสิทธิ์หรือไม่พบข้อมูล");
+          return;
+        }
       }
 
       toast.success("ลบบ้านเรียบร้อย");

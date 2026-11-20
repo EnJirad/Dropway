@@ -8,10 +8,12 @@
     "start": "next start",
     "lint": "next lint",
     "check": "node scripts/check-project.mjs",
+    "test:neon": "node scripts/test-neon.mjs",
     "test:supabase": "node scripts/test-supabase.mjs",
-    "db:test": "node scripts/test-supabase.mjs"
+    "db:test": "node scripts/test-neon.mjs"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.1",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.88.0",
     "csv-parse": "^6.1.0",

@@ -94,6 +94,25 @@ function extractLookup(raw: string): { id?: string; term?: string } {
 async function findHouseByCode(raw: string): Promise<House | null> {
   const lookup = extractLookup(raw);
 
+  // 1. ลองค้นหาผ่าน Neon API
+  try {
+    const q = lookup.id || lookup.term || "";
+    if (q) {
+      const res = await fetch(`/api/houses?search=${encodeURIComponent(q)}`);
+      const json = await res.json();
+      if (res.ok && Array.isArray(json.data) && json.data.length > 0) {
+        if (lookup.id) {
+          const match = json.data.find(
+            (h: House) => h.id.toLowerCase() === lookup.id?.toLowerCase()
+          );
+          if (match) return match;
+        } else {
+          return json.data[0];
+        }
+      }
+    }
+  } catch {}
+
   if (lookup.id) {
     const { data, error } = await supabase
       .from("houses")
@@ -284,16 +303,32 @@ export default function ScanPage() {
       if (!result || adding) return;
       setAdding(true);
       try {
-        const { error } = await supabase
-          .from("user_navigation_houses")
-          .insert({ house_id: result.id });
+        let addedViaNeon = false;
+        let isDuplicate = false;
+        try {
+          const res = await fetch("/api/navigation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ house_id: result.id }),
+          });
+          if (res.ok) {
+            addedViaNeon = true;
+          }
+        } catch {}
 
-        if (error && error.code !== "23505") throw error;
+        if (!addedViaNeon) {
+          const { error } = await supabase
+            .from("user_navigation_houses")
+            .insert({ house_id: result.id });
+
+          if (error && error.code !== "23505") throw error;
+          if (error?.code === "23505") isDuplicate = true;
+        }
 
         setAdded(true);
         if (!silent) {
           toast.success(
-            error?.code === "23505"
+            isDuplicate
               ? "บ้านนี้อยู่ในรายการนำทางแล้ว"
               : "เพิ่มเข้าคิวนำทางแล้ว",
           );

@@ -42,7 +42,22 @@ export default function Navbar() {
   useEffect(() => {
     const fetchUser = async () => {
       const { data } = await supabase.auth.getUser();
-      setUser(data.user ?? null);
+      if (data.user) {
+        setUser(data.user);
+      } else {
+        // ตรวจสอบว่าใช้งานโหมด Neon Database หรือไม่ (ถ้าใช่ ให้แสดงเมนูนำทางครบถ้วน)
+        try {
+          const res = await fetch("/api/db/test");
+          const json = await res.json();
+          if (res.ok && json.connected) {
+            setUser({ id: "neon-driver", email: "Neon Database" } as User);
+          } else {
+            setUser(null);
+          }
+        } catch {
+          setUser(null);
+        }
+      }
       setLoading(false);
     };
     fetchUser();

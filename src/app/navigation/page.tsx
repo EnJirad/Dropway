@@ -607,6 +607,15 @@ export default function NavigationPage() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
+        // ตรวจสอบว่าเปิดโหมด Neon Database หรือไม่
+        try {
+          const res = await fetch("/api/navigation");
+          const json = await res.json();
+          if (res.ok && json.isConfigured !== false) {
+            setLoading(false);
+            return;
+          }
+        } catch {}
         router.push("/login");
       } else {
         setLoading(false);
@@ -619,6 +628,18 @@ export default function NavigationPage() {
   useEffect(() => {
     const fetchNavigation = async () => {
       setLoading(true);
+
+      // 1. ลองโหลดผ่าน Neon API ก่อน
+      try {
+        const apiRes = await fetch("/api/navigation");
+        const apiJson = await apiRes.json();
+        if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
+          setList(apiJson.data);
+          setLoading(false);
+          return;
+        }
+      } catch {}
+
       let allHouses: NavigationHouse[] = [];
       let start = 0;
       const pageSize = 1000; // ปลอดภัยสุดสำหรับแผน Free

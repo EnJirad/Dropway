@@ -41,12 +41,17 @@ try {
   hasError = true;
 }
 
-// 3. ตรวจสอบการเชื่อมต่อ Supabase
-console.log(`${colors.bold}3. ตรวจสอบสถานะการเชื่อมต่อ Supabase...${colors.reset}`);
+// 3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon หรือ Supabase)
+console.log(`${colors.bold}3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon / Supabase)...${colors.reset}`);
 try {
-  execSync('node scripts/test-supabase.mjs', { stdio: 'inherit' });
+  const envContent = process.env.DATABASE_URL || '';
+  if (envContent) {
+    execSync('node scripts/test-neon.mjs', { stdio: 'inherit' });
+  } else {
+    execSync('node scripts/test-neon.mjs', { stdio: 'inherit' });
+  }
 } catch (e) {
-  // ข้อความเตือนของ test-supabase แสดงอยู่ในตัวสคริปต์แล้ว
+  // ข้อความเตือนแสดงอยู่ในตัวสคริปต์แล้ว
 }
 
 console.log(`\n${colors.bold}${colors.cyan}================================================================${colors.reset}`);
