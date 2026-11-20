@@ -64,3 +64,36 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// DELETE /api/navigation - ลบรายการนำทางทั้งหมด หรือตามรายชื่อ id
+export async function DELETE(request: NextRequest) {
+  try {
+    if (!isNeonConfigured) {
+      return NextResponse.json({ error: "Neon not configured" }, { status: 400 });
+    }
+
+    await ensureDatabaseSchema();
+    const sql = getDb();
+    const body = await request.json().catch(() => ({}));
+    const ids: string[] = Array.isArray(body?.ids) ? body.ids : [];
+
+    if (ids.length > 0) {
+      await sql`
+        DELETE FROM public.user_navigation_houses
+        WHERE id = ANY(${ids});
+      `;
+    } else {
+      await sql`
+        DELETE FROM public.user_navigation_houses;
+      `;
+    }
+
+    return NextResponse.json({ success: true, count: ids.length });
+  } catch (error) {
+    console.error("API /api/navigation DELETE error:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Delete navigation failed" },
+      { status: 500 }
+    );
+  }
+}

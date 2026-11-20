@@ -1,5 +1,5 @@
 /**
- * Maps Supabase auth error messages to readable Thai copy.
+ * Maps auth error messages to readable Thai copy.
  * Raw messages are safe to keep as a fallback so users still get a
  * diagnosable error instead of a silent failure.
  */

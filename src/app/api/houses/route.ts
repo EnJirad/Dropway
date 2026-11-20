@@ -16,10 +16,17 @@ export async function GET(request: NextRequest) {
     await ensureDatabaseSchema();
     const sql = getDb();
 
+    const id = request.nextUrl.searchParams.get("id")?.trim();
     const search = request.nextUrl.searchParams.get("search")?.trim();
     let houses;
 
-    if (search) {
+    if (id) {
+      houses = await sql`
+        SELECT * FROM public.houses
+        WHERE id = ${id}
+        LIMIT 1;
+      `;
+    } else if (search) {
       const term = `%${search}%`;
       houses = await sql`
         SELECT * FROM public.houses

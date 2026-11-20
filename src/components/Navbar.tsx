@@ -4,10 +4,14 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { supabase } from "@/lib/supabase";
-import { User } from "@supabase/supabase-js";
 import type { LucideIcon } from "lucide-react";
 import { Menu, X, LogOut, Warehouse, MapPinned, ScanLine } from "lucide-react";
+
+interface AppUser {
+  id: string;
+  email?: string;
+  name?: string;
+}
 
 // Single source of truth for the in-app navigation destinations on mobile.
 const MOBILE_TABS: ReadonlyArray<{ href: string; label: string; Icon: LucideIcon }> = [
@@ -31,7 +35,7 @@ function mobileTabIconClass(active: boolean) {
 }
 
 export default function Navbar() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
@@ -41,37 +45,23 @@ export default function Navbar() {
 
   useEffect(() => {
     const fetchUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (data.user) {
-        setUser(data.user);
-      } else {
-        // ตรวจสอบว่าใช้งานโหมด Neon Database หรือไม่ (ถ้าใช่ ให้แสดงเมนูนำทางครบถ้วน)
-        try {
-          const res = await fetch("/api/db/test");
-          const json = await res.json();
-          if (res.ok && json.connected) {
-            setUser({ id: "neon-driver", email: "Neon Database" } as User);
-          } else {
-            setUser(null);
-          }
-        } catch {
-          setUser(null);
+      try {
+        const stored = typeof window !== "undefined" ? localStorage.getItem("dropway_user") : null;
+        if (stored) {
+          try {
+            setUser(JSON.parse(stored));
+            setLoading(false);
+            return;
+          } catch {}
         }
-      }
-      setLoading(false);
-    };
-    fetchUser();
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_, session) => {
-        setUser(session?.user ?? null);
+        setUser({ id: "neon-driver", email: "Neon Database", name: "คนขับ DropWay" });
+      } catch {
+        setUser({ id: "neon-driver", email: "Neon Database", name: "คนขับ DropWay" });
+      } finally {
         setLoading(false);
       }
-    );
-
-    return () => {
-      listener.subscription.unsubscribe();
     };
+    fetchUser();
   }, []);
 
   // Drawer behavior: Escape closes, focus moves in on open, focus returns on close.
@@ -125,11 +115,13 @@ export default function Navbar() {
     };
   }, [mobileMenuOpen]);
 
-  const logout = async () => {
+  const logout = () => {
     try {
-      await supabase.auth.signOut();
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("dropway_user");
+      }
     } catch {
-      // Keep existing auth behavior; do not expose details here.
+      // Ignore
     }
     setMobileMenuOpen(false);
     location.href = "/login";

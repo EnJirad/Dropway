@@ -19,7 +19,6 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
-import { supabase } from "@/lib/supabase";
 import { House } from "@/types/house";
 
 const SCANNER_REGION_ID = "qr-scan-region";
@@ -94,9 +93,16 @@ function extractLookup(raw: string): { id?: string; term?: string } {
 async function findHouseByCode(raw: string): Promise<House | null> {
   const lookup = extractLookup(raw);
 
-  // 1. ลองค้นหาผ่าน Neon API
+  // ค้นหาผ่าน Neon API
   try {
-    const q = lookup.id || lookup.term || "";
+    if (lookup.id) {
+      const res = await fetch(`/api/houses?id=${encodeURIComponent(lookup.id)}`);
+      const json = await res.json();
+      if (res.ok && Array.isArray(json.data) && json.data.length > 0) {
+        return json.data[0];
+      }
+    }
+    const q = lookup.term || lookup.id || "";
     if (q) {
       const res = await fetch(`/api/houses?search=${encodeURIComponent(q)}`);
       const json = await res.json();
@@ -111,35 +117,11 @@ async function findHouseByCode(raw: string): Promise<House | null> {
         }
       }
     }
-  } catch {}
-
-  if (lookup.id) {
-    const { data, error } = await supabase
-      .from("houses")
-      .select("*")
-      .eq("id", lookup.id)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as House | null) ?? null;
+  } catch (err) {
+    console.error("Lookup error:", err);
   }
 
-  // ตัดอักขระที่ทำให้ PostgREST filter เพี้ยน
-  const term = (lookup.term ?? "")
-    .replace(/[\\,()*%]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (term.length < 2) return null;
-
-  const pattern = `%${term}%`;
-  const { data, error } = await supabase
-    .from("houses")
-    .select("*")
-    .or(
-      `full_name.ilike.${pattern},phone.ilike.${pattern},address.ilike.${pattern}`,
-    )
-    .limit(1);
-  if (error) throw error;
-  return (data?.[0] as House | undefined) ?? null;
+  return null;
 }
 
 function cameraErrorMessage(error: unknown): string {
@@ -303,26 +285,20 @@ export default function ScanPage() {
       if (!result || adding) return;
       setAdding(true);
       try {
-        let addedViaNeon = false;
         let isDuplicate = false;
-        try {
-          const res = await fetch("/api/navigation", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ house_id: result.id }),
-          });
-          if (res.ok) {
-            addedViaNeon = true;
+        const res = await fetch("/api/navigation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ house_id: result.id }),
+        });
+        const json = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          if (json.error?.includes("duplicate") || json.error?.includes("23505")) {
+            isDuplicate = true;
+          } else {
+            throw new Error(json.error || "เพิ่มไม่สำเร็จ");
           }
-        } catch {}
-
-        if (!addedViaNeon) {
-          const { error } = await supabase
-            .from("user_navigation_houses")
-            .insert({ house_id: result.id });
-
-          if (error && error.code !== "23505") throw error;
-          if (error?.code === "23505") isDuplicate = true;
         }
 
         setAdded(true);

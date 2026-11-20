@@ -2,7 +2,7 @@
 
 /**
  * Project Health & Integrity Check
- * สคริปต์ตรวจสอบความสมบูรณ์ของโปรเจกต์ (TypeScript, ESLint, และ Supabase Connection)
+ * สคริปต์ตรวจสอบความสมบูรณ์ของโปรเจกต์ (TypeScript, ESLint, และ Neon PostgreSQL Connection)
  */
 
 import { execSync } from 'node:child_process';
@@ -41,15 +41,10 @@ try {
   hasError = true;
 }
 
-// 3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon หรือ Supabase)
-console.log(`${colors.bold}3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon / Supabase)...${colors.reset}`);
+// 3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon PostgreSQL)
+console.log(`${colors.bold}3. ตรวจสอบสถานะการเชื่อมต่อ Database (Neon PostgreSQL)...${colors.reset}`);
 try {
-  const envContent = process.env.DATABASE_URL || '';
-  if (envContent) {
-    execSync('node scripts/test-neon.mjs', { stdio: 'inherit' });
-  } else {
-    execSync('node scripts/test-neon.mjs', { stdio: 'inherit' });
-  }
+  execSync('node scripts/test-neon.mjs', { stdio: 'inherit' });
 } catch (e) {
   // ข้อความเตือนแสดงอยู่ในตัวสคริปต์แล้ว
 }

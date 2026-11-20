@@ -1,9 +1,7 @@
 // C:\DropWay\New_Version\dropway-final\src\app\houses\page.tsx
 "use client";
-import { supabase } from "@/lib/supabase";
 import { House } from "@/types/house";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   Home,
   MapPin,
@@ -357,7 +355,6 @@ export default function HousesPage() {
   const [importingCsv, setImportingCsv] = useState(false);
   const [importProgress, setImportProgress] = useState<string | null>(null);
   const [isSavingHouse, setIsSavingHouse] = useState(false);
-  const router = useRouter();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const [coordsInput, setCoordsInput] = useState<string>("");
@@ -541,31 +538,23 @@ export default function HousesPage() {
     }
   }, [editingHouse, isAdding, formData.address]);
 
-  // เช็ก session
+  // เช็ก session / การเชื่อมต่อฐานข้อมูล Neon
   useEffect(() => {
     const checkSession = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
-        // ตรวจสอบว่าเปิดใช้งานโหมด Neon Database หรือไม่ (ถ้ามี DATABASE_URL ให้เข้าใช้งานได้ทันที)
-        try {
-          const res = await fetch("/api/db/init", { method: "POST" });
-          const json = await res.json();
-          if (res.ok && json.success) {
-            setLoading(false);
-            return;
-          }
-        } catch {
-          // fallback
+      try {
+        const res = await fetch("/api/db/init", { method: "POST" });
+        const json = await res.json();
+        if (res.ok && json.success) {
+          setLoading(false);
+          return;
         }
-        router.push("/login");
-      } else {
-        setLoading(false);
+      } catch {
+        // fallback
       }
+      setLoading(false);
     };
     checkSession();
-  }, [router]);
+  }, []);
 
   // กรองข้อมูล + เรียงลำดับตามความตรงของ searchTerm
   // ลำดับการทำงาน (สำคัญ):
@@ -659,52 +648,26 @@ export default function HousesPage() {
     setLoading(true);
     setLoadingError(null);
 
-    // 1. ลองดึงข้อมูลผ่าน Neon API ก่อน
+    // ดึงข้อมูลผ่าน Neon API
     try {
       const apiRes = await fetch("/api/houses");
       const apiJson = await apiRes.json();
-      if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
+      if (apiRes.ok && Array.isArray(apiJson.data)) {
         setHouses(apiJson.data);
         setTotalInDB(apiJson.data.length);
         setLoading(false);
         return;
       }
-    } catch {
-      // fallback to Supabase
+      throw new Error(apiJson.error || "โหลดข้อมูลไม่สำเร็จ");
+    } catch (err) {
+      console.error("Error:", err);
+      toast.error("โหลดข้อมูลไม่สำเร็จ");
+      setLoadingError(
+        "ตรวจสอบการเชื่อมต่อฐานข้อมูล Neon และอินเทอร์เน็ตแล้วกดลองใหม่อีกครั้ง",
+      );
+    } finally {
+      setLoading(false);
     }
-
-    let allHouses: House[] = [];
-    let start = 0;
-    const pageSize = 1000;
-
-      while (true) {
-        const { data, error } = await supabase
-          .from("houses")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .range(start, start + pageSize - 1);
-
-        if (error) {
-          console.error("Error:", error);
-          toast.error("โหลดข้อมูลไม่สำเร็จ");
-          setLoadingError(
-            "ตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วกดลองใหม่อีกครั้ง",
-          );
-          break;
-        }
-
-        if (!data || data.length === 0) break;
-
-        allHouses = [...allHouses, ...data];
-        start += pageSize;
-
-        // ถ้าได้น้อยกว่า pageSize → จบแล้ว
-        if (data.length < pageSize) break;
-      }
-
-    setHouses(allHouses);
-    setTotalInDB(allHouses.length);
-    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -868,49 +831,17 @@ export default function HousesPage() {
 
   // แก้ฟังก์ชันนี้ทั้งหมด (แทนที่อันเดิม)
   const reloadHouses = async () => {
-    // 1. ลองดึงผ่าน Neon API ก่อน
+    setLoading(true);
     try {
       const apiRes = await fetch("/api/houses");
       const apiJson = await apiRes.json();
-      if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
+      if (apiRes.ok && Array.isArray(apiJson.data)) {
         setHouses(apiJson.data);
         setTotalInDB(apiJson.data.length);
-        setLoading(false);
+        toast.success("รีโหลดข้อมูลสำเร็จ");
         return;
       }
-    } catch {}
-
-    let allHouses: House[] = [];
-    let start = 0;
-    const pageSize = 1000;
-
-    setLoading(true);
-
-    try {
-      while (true) {
-        const { data, error } = await supabase
-          .from("houses")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .range(start, start + pageSize - 1);
-
-        if (error) {
-          toast.error("รีโหลดข้อมูลไม่สำเร็จ");
-          console.error(error);
-          break;
-        }
-
-        if (!data || data.length === 0) break;
-
-        allHouses = [...allHouses, ...data];
-        start += pageSize;
-
-        if (data.length < pageSize) break;
-      }
-
-      setHouses(allHouses);
-      setTotalInDB(allHouses.length);
-      toast.success("รีโหลดข้อมูลสำเร็จ");
+      throw new Error(apiJson.error || "รีโหลดข้อมูลไม่สำเร็จ");
     } catch {
       toast.error("เกิดข้อผิดพลาดในการรีโหลด");
     } finally {
@@ -918,7 +849,7 @@ export default function HousesPage() {
     }
   };
 
-  // ⭐ แก้ฟังก์ชัน addToNav ทั้งหมด (แทนที่อันเดิม)
+  // ฟังก์ชัน addToNav เพิ่มเข้าคิวนำทางผ่าน Neon API
   const addToNav = async (houseId: string) => {
     const now = Date.now();
     if (lastAdded[houseId] && now - lastAdded[houseId] < 1000) {
@@ -930,24 +861,31 @@ export default function HousesPage() {
     setAddingIds((prev) => [...prev, houseId]);
     setLastAdded((prev) => ({ ...prev, [houseId]: now }));
 
-    const { error } = await supabase
-      .from("user_navigation_houses")
-      .insert({ house_id: houseId });
+    try {
+      const apiRes = await fetch("/api/navigation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ house_id: houseId }),
+      });
+      const apiJson = await apiRes.json().catch(() => ({}));
 
-    if (error) {
-      if (error.code === "23505") {
-        toast("บ้านนี้อยู่ในรายการนำทางแล้ว", {
-          icon: "ℹ️",
-          duration: 1000,
-        });
+      if (!apiRes.ok) {
+        if (apiJson.error?.includes("duplicate") || apiJson.error?.includes("23505")) {
+          toast("บ้านนี้อยู่ในรายการนำทางแล้ว", {
+            icon: "ℹ️",
+            duration: 1000,
+          });
+        } else {
+          toast.error("เพิ่มไม่สำเร็จ");
+        }
       } else {
-        toast.error("เพิ่มไม่สำเร็จ");
+        toast.success("เพิ่มเรียบร้อย");
       }
-    } else {
-      toast.success(" เพิ่มเรียบร้อย");
+    } catch {
+      toast.error("เพิ่มไม่สำเร็จ");
+    } finally {
+      setAddingIds((prev) => prev.filter((id) => id !== houseId));
     }
-
-    setAddingIds((prev) => prev.filter((id) => id !== houseId));
   };
 
   const openAddModal = () => {
@@ -1223,51 +1161,28 @@ export default function HousesPage() {
     setIsSavingHouse(true);
     try {
       if (isAdding) {
-        let savedViaNeon = false;
-        try {
-          const apiRes = await fetch("/api/houses", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(finalData),
-          });
-          const apiJson = await apiRes.json();
-          if (apiRes.ok && apiJson.success) {
-            savedViaNeon = true;
-          }
-        } catch {}
-
-        if (!savedViaNeon) {
-          const { error } = await supabase.from("houses").insert(finalData);
-          if (error) {
-            toast.error("เพิ่มบ้านไม่สำเร็จ: " + error.message);
-            return;
-          }
+        const apiRes = await fetch("/api/houses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(finalData),
+        });
+        const apiJson = await apiRes.json();
+        if (!apiRes.ok || !apiJson.success) {
+          toast.error("เพิ่มบ้านไม่สำเร็จ: " + (apiJson.error || "เกิดข้อผิดพลาด"));
+          return;
         }
         toast.success("เพิ่มบ้านสำเร็จ!");
       } else {
         if (!editingHouse) return;
-        let updatedViaNeon = false;
-        try {
-          const apiRes = await fetch(`/api/houses/${editingHouse.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(finalData),
-          });
-          const apiJson = await apiRes.json();
-          if (apiRes.ok && apiJson.success) {
-            updatedViaNeon = true;
-          }
-        } catch {}
-
-        if (!updatedViaNeon) {
-          const { error } = await supabase
-            .from("houses")
-            .update(finalData)
-            .eq("id", editingHouse.id);
-          if (error) {
-            toast.error("เกิดข้อผิดพลาด: " + error.message);
-            return;
-          }
+        const apiRes = await fetch(`/api/houses/${editingHouse.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(finalData),
+        });
+        const apiJson = await apiRes.json();
+        if (!apiRes.ok || !apiJson.success) {
+          toast.error("เกิดข้อผิดพลาด: " + (apiJson.error || "บันทึกไม่สำเร็จ"));
+          return;
         }
         toast.success("บันทึกสำเร็จ");
       }
@@ -1334,87 +1249,24 @@ export default function HousesPage() {
         return;
       }
 
-      // 1. ลองนำเข้าผ่าน Server API ก่อน (รองรับ Neon + Auto-create table อัตโนมัติหากยังไม่มี)
+      // นำเข้าผ่าน Server API (รองรับ Neon + Auto-create table อัตโนมัติหากยังไม่มี)
       setImportProgress("กำลังตรวจสอบและนำเข้าข้อมูล (สร้างฐานข้อมูลอัตโนมัติหากยังไม่มี)...");
-      try {
-        const uploadRes = await fetch("/api/houses/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(rows),
-        });
-        const uploadResult = await uploadRes.json();
-        if (uploadRes.ok && uploadResult.success) {
-          await loadHouses();
-          const skipped = (uploadResult.duplicates || 0) + invalid;
-          toast.success(
-            `เพิ่ม ${uploadResult.inserted} รายการ${
-              skipped > 0 ? ` • ข้าม ${skipped} รายการ (ซ้ำ/ไม่ถูกต้อง)` : ""
-            }`
-          );
-          return;
-        }
-      } catch (neonErr) {
-        console.warn("Neon upload fallback to Supabase client:", neonErr);
-      }
-
-      // 2. Fallback: ตรวจ id ที่มีอยู่แล้วใน Supabase (กรณีใช้ Supabase เดิม)
-      const existingIds = new Set<string>();
-      const ids = rows.map((row) => row.id);
-      for (let start = 0; start < ids.length; start += 100) {
-        const chunk = ids.slice(start, start + 100);
-        setImportProgress(
-          `กำลังตรวจรหัสซ้ำ ${Math.min(start + chunk.length, ids.length)}/${ids.length}...`,
-        );
-        const { data, error } = await supabase
-          .from("houses")
-          .select("id")
-          .in("id", chunk);
-        if (error) throw error;
-        data?.forEach((item: { id: string }) =>
-          existingIds.add(item.id.toLowerCase()),
-        );
-      }
-
-      const newRows = rows.filter((row) => !existingIds.has(row.id));
-      const duplicates = rows.length - newRows.length + duplicatedInFile;
-
-      if (newRows.length === 0) {
-        toast.success(
-          `ไม่มีข้อมูลใหม่ — ข้ามรายการซ้ำ ${duplicates} รายการ`,
-        );
-        return;
-      }
-
-      let inserted = 0;
-      for (let start = 0; start < newRows.length; start += 500) {
-        const batch = newRows.slice(start, start + 500);
-        setImportProgress(
-          `กำลังนำเข้า ${Math.min(start, newRows.length)}/${newRows.length}...`,
-        );
-        const { error } = await supabase.from("houses").insert(batch);
-        if (!error) {
-          inserted += batch.length;
-          continue;
-        }
-
-        // มีแถวใดแถวหนึ่งผิดพลาด: ลองทีละแถวเพื่อเก็บแถวที่ถูกต้องไว้
-        for (const row of batch) {
-          const { error: rowError } = await supabase.from("houses").insert(row);
-          if (!rowError) {
-            inserted += 1;
-          } else {
-            console.error("CSV import failed", row.id, rowError);
-          }
-        }
-        toast.error(`บางรายการนำเข้าไม่สำเร็จ: ${error.message}`);
+      const uploadRes = await fetch("/api/houses/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rows),
+      });
+      const uploadResult = await uploadRes.json();
+      if (!uploadRes.ok || !uploadResult.success) {
+        throw new Error(uploadResult.error || "อัพโหลดไม่สำเร็จ");
       }
 
       await loadHouses();
-      const skipped = duplicates + invalid;
+      const skipped = (uploadResult.duplicates || 0) + invalid + duplicatedInFile;
       toast.success(
-        `เพิ่ม ${inserted} รายการ${
+        `เพิ่ม ${uploadResult.inserted} รายการ${
           skipped > 0 ? ` • ข้าม ${skipped} รายการ (ซ้ำ/ไม่ถูกต้อง)` : ""
-        }`,
+        }`
       );
     } catch (error) {
       console.error(error);
@@ -1430,30 +1282,32 @@ export default function HousesPage() {
 
   const downloadAllHousesCsv = async () => {
     setDownloading(true);
-    const { data, error } = await supabase
-      .from("houses")
-      .select("id,full_name,phone,address,lat,lng,note,quantity,created_at,updated_at")
-      .order("created_at", { ascending: false });
-    if (error) {
-      toast.error("ดาวน์โหลดไม่สำเร็จ: " + error.message);
+    try {
+      const res = await fetch("/api/houses");
+      const json = await res.json();
+      if (!res.ok || !Array.isArray(json.data)) {
+        throw new Error(json.error || "ไม่สามารถดึงข้อมูลได้");
+      }
+      const data = json.data;
+      const csv = Papa.unparse(data);
+      const blob = new Blob(["\uFEFF" + csv], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      link.download = `คลังบ้าน_ทั้งหมด_${dateStr}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success("ดาวน์โหลด CSV สำเร็จ!");
+    } catch (error) {
+      toast.error("ดาวน์โหลดไม่สำเร็จ: " + (error instanceof Error ? error.message : ""));
+    } finally {
       setDownloading(false);
-      return;
     }
-    const csv = Papa.unparse(data);
-    const blob = new Blob(["\uFEFF" + csv], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    const dateStr = new Date().toISOString().slice(0, 10);
-    link.download = `คลังบ้าน_ทั้งหมด_${dateStr}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    toast.success("ดาวน์โหลด CSV สำเร็จ!");
-    setDownloading(false);
   };
 
   // ลบได้เฉพาะหลังยืนยันในหน้าต่างยืนยันของแอป (ไม่ใช้ confirm ของเบราว์เซอร์)
@@ -1463,32 +1317,11 @@ export default function HousesPage() {
 
     setIsDeletingHouse(true);
     try {
-      let deletedViaNeon = false;
-      try {
-        const apiRes = await fetch(`/api/houses/${house.id}`, { method: "DELETE" });
-        const apiJson = await apiRes.json();
-        if (apiRes.ok && apiJson.success) {
-          deletedViaNeon = true;
-        }
-      } catch {}
-
-      if (!deletedViaNeon) {
-        const { data, error } = await supabase
-          .from("houses")
-          .delete()
-          .eq("id", house.id)
-          .select();
-
-        if (error) {
-          toast.error("ลบไม่สำเร็จ: " + error.message);
-          console.error("Delete error:", error);
-          return;
-        }
-
-        if (!data || data.length === 0) {
-          toast.error("ลบไม่สำเร็จ: ไม่มีสิทธิ์หรือไม่พบข้อมูล");
-          return;
-        }
+      const apiRes = await fetch(`/api/houses/${house.id}`, { method: "DELETE" });
+      const apiJson = await apiRes.json();
+      if (!apiRes.ok || !apiJson.success) {
+        toast.error("ลบไม่สำเร็จ: " + (apiJson.error || "เกิดข้อผิดพลาด"));
+        return;
       }
 
       toast.success("ลบบ้านเรียบร้อย");
@@ -1502,6 +1335,8 @@ export default function HousesPage() {
         setCurrentPage(Math.max(1, totalPagesAfter));
       }
       setHouseToDelete(null);
+    } catch (err) {
+      toast.error("ลบไม่สำเร็จ: " + (err instanceof Error ? err.message : ""));
     } finally {
       setIsDeletingHouse(false);
     }
@@ -1588,12 +1423,12 @@ export default function HousesPage() {
           <label htmlFor="house-search" className="sr-only">
             ค้นหาบ้าน
           </label>
-        
+
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400"
             aria-hidden="true"
           />
-        
+
           <input
             id="house-search"
             ref={searchInputRef}
@@ -1603,7 +1438,7 @@ export default function HousesPage() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="input pl-10 pr-28"
           />
-      
+
           {/* ปุ่ม X ล้างคำค้นหา: อยู่ตำแหน่งเดิมก่อนปุ่ม Filter */}
           {searchTerm && (
             <button
@@ -1619,7 +1454,7 @@ export default function HousesPage() {
               <XIcon className="h-5 w-5" aria-hidden="true" />
             </button>
           )}
-        
+
           {/* ปุ่ม Filter: อยู่ขวาสุดเหมือนเดิม */}
           <button
             type="button"

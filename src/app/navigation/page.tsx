@@ -1,10 +1,8 @@
 // C:\DropWay\New_Version\dropway-final\src\app\navigation\page.tsx
 "use client";
-import { supabase } from "@/lib/supabase";
 import { NavigationHouse } from "@/types/navigation";
 import { House } from "@/types/house";
 import { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
 import {
   Home,
   MapPin,
@@ -250,7 +248,6 @@ export default function NavigationPage() {
   // จำนวนเงินที่ยืนยันแล้ว (ใช้สร้าง comment ตอนบันทึกรายงาน)
   const [reportTransferAmount, setReportTransferAmount] = useState("");
   const watchIdRef = useRef<number | null>(null);
-  const router = useRouter();
 
   function nearestNeighborTSP(
     startLat: number,
@@ -600,80 +597,40 @@ export default function NavigationPage() {
   const [restrictedConfirmPayload, setRestrictedConfirmPayload] =
     useState<{ label: string; onConfirm: () => void } | null>(null);
 
-  // เช็ก session
+  // เช็ก session / การเชื่อมต่อฐานข้อมูล Neon
   useEffect(() => {
     const checkSession = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
-        // ตรวจสอบว่าเปิดโหมด Neon Database หรือไม่
-        try {
-          const res = await fetch("/api/navigation");
-          const json = await res.json();
-          if (res.ok && json.isConfigured !== false) {
-            setLoading(false);
-            return;
-          }
-        } catch {}
-        router.push("/login");
-      } else {
-        setLoading(false);
-      }
-    };
-    checkSession();
-  }, [router]);
-
-  // โหลดข้อมูลการนำทาง
-  useEffect(() => {
-    const fetchNavigation = async () => {
-      setLoading(true);
-
-      // 1. ลองโหลดผ่าน Neon API ก่อน
       try {
-        const apiRes = await fetch("/api/navigation");
-        const apiJson = await apiRes.json();
-        if (apiRes.ok && Array.isArray(apiJson.data) && (apiJson.data.length > 0 || apiJson.isConfigured !== false)) {
-          setList(apiJson.data);
+        const res = await fetch("/api/navigation");
+        const json = await res.json();
+        if (res.ok && json.isConfigured !== false) {
           setLoading(false);
           return;
         }
       } catch {}
-
-      let allHouses: NavigationHouse[] = [];
-      let start = 0;
-      const pageSize = 1000; // ปลอดภัยสุดสำหรับแผน Free
-
-      while (true) {
-        const { data, error } = await supabase
-          .from("navigation_view")
-          .select("*")
-          .order("nav_priority", { ascending: true })
-          .range(start, start + pageSize - 1);
-
-        if (error) {
-          console.error("Error fetching navigation:", error);
-          toast.error("โหลดรายการนำทางไม่สำเร็จ");
-          break;
-        }
-
-        if (!data || data.length === 0) {
-          break;
-        }
-
-        allHouses = [...allHouses, ...data];
-        start += pageSize;
-
-        if (data.length < pageSize) {
-          break;
-        }
-
-        // เพิ่ม delay เพื่อไม่ให้โดน rate limit
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-
-      setList(allHouses);
       setLoading(false);
+    };
+    checkSession();
+  }, []);
+
+  // โหลดข้อมูลการนำทางผ่าน Neon API
+  useEffect(() => {
+    const fetchNavigation = async () => {
+      setLoading(true);
+      try {
+        const apiRes = await fetch("/api/navigation");
+        const apiJson = await apiRes.json();
+        if (apiRes.ok && Array.isArray(apiJson.data)) {
+          setList(apiJson.data);
+          setLoading(false);
+          return;
+        }
+      } catch (e) {
+        console.error("Error fetching navigation:", e);
+        toast.error("โหลดรายการนำทางไม่สำเร็จ");
+      } finally {
+        setLoading(false);
+      }
     };
 
     fetchNavigation();
@@ -897,15 +854,16 @@ export default function NavigationPage() {
 
     try {
       const trimmed = commentText.trim();
-      const { error } = await supabase
-        .from("user_navigation_houses")
-        .update({
-          driver_note: trimmed || null, // ถ้าว่างให้เป็น null
-        })
-        .eq("id", houseToComment.nav_id);
-
-      if (error) {
-        toast.error("บันทึกคอมเมนต์ไม่สำเร็จ: " + error.message);
+      const res = await fetch(`/api/navigation/${houseToComment.nav_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driver_note: trimmed || null,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        toast.error("บันทึกคอมเมนต์ไม่สำเร็จ: " + (json.error || ""));
         return;
       }
 
@@ -1343,12 +1301,10 @@ export default function NavigationPage() {
   };
   const removeFromNavigation = async (navId: string) => {
     if (!confirm("ยืนยันการลบบ้านนี้ออกจากการนำทาง?")) return;
-    const { error } = await supabase
-      .from("user_navigation_houses")
-      .delete()
-      .eq("id", navId);
-    if (error) {
-      toast.error("ลบไม่สำเร็จ: " + error.message);
+    const res = await fetch(`/api/navigation/${navId}`, { method: "DELETE" });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.success) {
+      toast.error("ลบไม่สำเร็จ: " + (json.error || ""));
       return;
     }
     toast.success("ลบออกจากการนำทางเรียบร้อย");
@@ -1364,12 +1320,14 @@ export default function NavigationPage() {
     )
       return;
     const navIds = list.map((h) => h.nav_id);
-    const { error } = await supabase
-      .from("user_navigation_houses")
-      .delete()
-      .in("id", navIds);
-    if (error) {
-      toast.error("ลบทั้งหมดไม่สำเร็จ: " + error.message);
+    const res = await fetch("/api/navigation", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: navIds }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.success) {
+      toast.error("ลบทั้งหมดไม่สำเร็จ: " + (json.error || ""));
       return;
     }
     toast.success(`ลบทั้งหมด ${list.length} บ้านออกจากการนำทางเรียบร้อย`);
@@ -1519,17 +1477,19 @@ export default function NavigationPage() {
       lng: formData.lng ?? null,
     };
 
-    const { error } = await supabase
-      .from("houses")
-      .update(finalData)
-      .eq("id", editingHouse.house_id);
+    const res = await fetch(`/api/houses/${editingHouse.house_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(finalData),
+    });
+    const json = await res.json().catch(() => ({}));
 
-    if (error) {
-      toast.error("บันทึกไม่สำเร็จ: " + error.message);
+    if (!res.ok || !json.success) {
+      toast.error("บันทึกไม่สำเร็จ: " + (json.error || "เกิดข้อผิดพลาด"));
     } else {
       toast.success("บันทึกสำเร็จ");
       // รีโหลดข้อมูลล่าสุดจาก navigation_view
-      await reloadNavigation(); // ใช้ฟังก์ชันที่มีอยู่แล้ว
+      await reloadNavigation();
       closeModal();
     }
   };
@@ -1615,14 +1575,16 @@ export default function NavigationPage() {
     setShowStartModal(false);
     setIsFabOpen(false);
   };
-  // ⭐ เพิ่มฟังก์ชัน reloadNavigation ใหม่
+  // ⭐ ฟังก์ชัน reloadNavigation ผ่าน Neon API
   const reloadNavigation = async () => {
-    const { data } = await supabase
-      .from("navigation_view")
-      .select("*")
-      .order("nav_priority", { ascending: true });
-    if (data) {
-      setList(data);
+    try {
+      const res = await fetch("/api/navigation");
+      const json = await res.json();
+      if (res.ok && Array.isArray(json.data)) {
+        setList(json.data);
+      }
+    } catch (e) {
+      console.error("reloadNavigation error:", e);
     }
   };
 
@@ -1664,17 +1626,19 @@ export default function NavigationPage() {
         note = deliverNote;
       }
 
-      const { error } = await supabase
-        .from("user_navigation_houses")
-        .update({
+      const res = await fetch(`/api/navigation/${houseToDeliver.nav_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           delivery_status: "delivered",
           delivery_note: note,
           delivered_at: new Date().toISOString(),
-        })
-        .eq("id", houseToDeliver.nav_id);
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
 
-      if (error) {
-        toast.error("บันทึกการส่งไม่สำเร็จ: " + error.message);
+      if (!res.ok || !json.success) {
+        toast.error("บันทึกการส่งไม่สำเร็จ: " + (json.error || ""));
         return;
       }
 
@@ -1769,17 +1733,19 @@ export default function NavigationPage() {
 
     setIsReportSubmitting(true);
     try {
-      const { error } = await supabase
-        .from("user_navigation_houses")
-        .update({
+      const res = await fetch(`/api/navigation/${houseToReport.nav_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           delivery_status: "reported",
           report_reason: finalReason,
           reported_at: new Date().toISOString(),
-        })
-        .eq("id", houseToReport.nav_id);
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
 
-      if (error) {
-        toast.error("บันทึกรายงานไม่สำเร็จ: " + error.message);
+      if (!res.ok || !json.success) {
+        toast.error("บันทึกรายงานไม่สำเร็จ: " + (json.error || ""));
         return;
       }
 
@@ -1823,35 +1789,18 @@ export default function NavigationPage() {
     restoreInFlightRef.current = true;
     setIsRestoreSubmitting(true);
     try {
-      const { error } = await supabase
-        .from("user_navigation_houses")
-        .update({
+      const res = await fetch(`/api/navigation/${houseToRestore.nav_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           delivery_status: "pending",
           delivered_at: null,
-        })
-        .eq("id", houseToRestore.nav_id)
-        // กันกดซ้ำ/กดจากแท็บอื่น: อัปเดตได้เฉพาะแถวที่ยังเป็น delivered
-        .eq("delivery_status", "delivered");
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
 
-      if (error) {
+      if (!res.ok || !json.success) {
         toast.error("นำรายการกลับไปวันนี้ไม่สำเร็จ กรุณาลองใหม่");
-        return;
-      }
-
-      // ยืนยันกับ backend ว่ารายการกลับไป "วันนี้" จริง (ไม่ใช่แค่ state)
-      const { data: restored, error: verifyError } = await supabase
-        .from("navigation_view")
-        .select("nav_id, delivery_status")
-        .eq("nav_id", houseToRestore.nav_id)
-        .maybeSingle();
-
-      if (
-        verifyError ||
-        !restored ||
-        (restored.delivery_status && restored.delivery_status !== "pending")
-      ) {
-        toast.error("นำรายการกลับไปวันนี้ไม่สำเร็จ กรุณาลองใหม่");
-        await reloadNavigation();
         return;
       }
 
@@ -2860,11 +2809,11 @@ export default function NavigationPage() {
             >
               มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก
             </h2>
-        
+
             <p className="text-sm text-gray-600">
               ถ้าปิดตอนนี้ ข้อมูลที่กรอกไว้จะหาย
             </p>
-        
+
             <div className="modal-foot flex gap-3">
               <button
                 type="button"
@@ -2877,16 +2826,16 @@ export default function NavigationPage() {
               >
                 ไม่ปิด
               </button>
-        
+
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   const onConfirm = restrictedConfirmPayload.onConfirm;
-        
+
                   setShowRestrictedConfirmModal(false);
                   setRestrictedConfirmPayload(null);
-        
+
                   onConfirm();
                 }}
                 className="btn btn-primary flex-1 py-3"
@@ -2916,11 +2865,11 @@ export default function NavigationPage() {
             >
               มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก
             </h2>
-        
+
             <p className="text-sm text-gray-600">
               ถ้าปิดตอนนี้ ข้อมูลที่กรอกไว้จะหาย
             </p>
-        
+
             <div className="modal-foot flex gap-3">
               <button
                 type="button"
@@ -2932,7 +2881,7 @@ export default function NavigationPage() {
               >
                 ไม่ปิด
               </button>
-        
+
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}

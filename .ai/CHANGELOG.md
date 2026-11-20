@@ -1,5 +1,36 @@
 # .ai/CHANGELOG.md
 
+## 2026-11-20 — ลบ Supabase ออกทั้งหมด และเปลี่ยนมาใช้ Neon PostgreSQL เพียงที่เดียว 100%
+
+### หัวข้อ
+- ถอดการใช้งาน Supabase ออกจากทั้งระบบอย่างสมบูรณ์ตามความต้องการของผู้ใช้
+- กำหนดให้ Neon Serverless PostgreSQL (`neon.tech`) เป็น Single Source of Truth สำหรับถังเก็บข้อมูลเพียงแห่งเดียว
+- ถอด dependencies `@supabase/supabase-js` และ `@supabase/ssr` ออกจาก `package.json`
+- ปรับปรุงทุกหน้า (`/houses`, `/navigation`, `/scan`, `/login`, `/register`, `Navbar`) และ `middleware.ts` ให้เรียกใช้งานผ่าน Neon Server API Routes โดยตรง
+- ลบสคริปต์และโฟลเดอร์ที่ไม่ใช้งาน (`src/lib/supabase.ts`, `scripts/test-supabase.mjs`, `supabase-schema.sql`, `supabase/`)
+
+### ของเดิมที่ตรวจก่อนแก้
+- โค้ดยังคงมี Dual-Engine Fallback ไปที่ Supabase
+- หน้า `/houses`, `/navigation`, `/scan` ยังคงมี import `supabase` จาก `@/lib/supabase`
+- `middleware.ts` ยังคงตรวจสอบ Supabase cookie (`sb-access-token`) ซึ่งจะ redirect ไปที่ `/login` เมื่อไม่พบ
+
+### เปลี่ยนอะไร
+- `src/app/houses/page.tsx`: ตัด Supabase queries ออกทั้งหมด เชื่อมต่อผ่าน `/api/houses`, `/api/houses/upload`, `/api/navigation` เท่านั้น
+- `src/app/navigation/page.tsx`: ตัด Supabase queries ออกทั้งหมด อัปเดตสถานะการส่ง, คอมเมนต์, ลบ และกู้คืนผ่าน `/api/navigation` และ `/api/houses`
+- `src/app/scan/page.tsx`: ตัด Supabase client ออก ค้นหาและเพิ่มรายการนำทางผ่าน `/api/houses` และ `/api/navigation`
+- `src/components/Navbar.tsx`: ถอด Supabase Auth listener ออก ใช้ Driver profile ร่วมกับสถานะ Neon
+- `src/app/login/page.tsx` และ `src/app/register/page.tsx`: ถอด Supabase auth ออก เข้าสู่ระบบคนขับได้ทันที
+- `middleware.ts`: นำเงื่อนไขตรวจ Supabase cookie ออก เพื่อให้คนขับเปิดใช้งานแอปบนสมาร์ทโฟนได้โดยไม่ติดขัด
+- `scripts/check-project.mjs`: Health Check ทดสอบ Neon Connection เท่านั้น
+- `package.json`: ถอนการติดตั้ง `@supabase/supabase-js`, `@supabase/ssr` และลบคำสั่ง `test:supabase`
+- ลบไฟล์ `src/lib/supabase.ts`, `scripts/test-supabase.mjs`, `supabase-schema.sql`, และโฟลเดอร์ `supabase/`
+
+### ผลการตรวจสอบ
+- `node node_modules/typescript/bin/tsc --noEmit` → 0 errors
+- `npm run lint` → `✔ No ESLint warnings or errors`
+- `npm run test:neon` → ผ่านการตรวจสอบ
+
+
 ## 2026-11-20 — ย้ายระบบฐานข้อมูลเป็น Neon PostgreSQL และเพิ่มระบบ Auto-Schema On CSV Upload
 
 ### หัวข้อ

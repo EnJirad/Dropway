@@ -1,12 +1,11 @@
 "use client";
 
-import { supabase } from "@/lib/supabase";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { Loader2, Warehouse } from "lucide-react";
-import { EMAIL_PATTERN, toThaiAuthError } from "@/lib/authMessages";
+import { EMAIL_PATTERN } from "@/lib/authMessages";
 
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
@@ -42,23 +41,18 @@ export default function RegisterPage() {
     setFormError(null);
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signUp({
-        email: trimmedEmail,
-        password,
-        options: {
-          emailRedirectTo: `${location.origin}/houses`,
-        },
-      });
-
-      if (error) {
-        const message = toThaiAuthError(error.message);
-        setFormError(message);
-        toast.error(message);
-        return;
+      if (typeof window !== "undefined") {
+        localStorage.setItem(
+          "dropway_user",
+          JSON.stringify({
+            id: "neon-driver",
+            email: trimmedEmail,
+            name: trimmedEmail.split("@")[0],
+          })
+        );
       }
-
-      toast.success("สมัครสำเร็จ! กรุณาเช็กอีเมลเพื่อยืนยันบัญชี");
-      router.push("/login");
+      toast.success("สมัครสมาชิกสำเร็จ!");
+      router.push("/houses");
     } finally {
       setLoading(false);
     }

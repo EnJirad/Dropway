@@ -1,6 +1,6 @@
-# 📖 คู่มือการติดตั้งและเริ่มต้นใช้งาน DropWay สำหรับเครื่องใหม่ (Setup Guide)
+# 📖 คู่มือการติดตั้งและเริ่มต้นใช้งาน DropWay (Neon PostgreSQL Setup Guide)
 
-คู่มือนี้จัดทำขึ้นเพื่อให้คุณสามารถนำโปรเจกต์ **DropWay** ไปเปิดใช้งานบนเครื่องคอมพิวเตอร์เครื่องใหม่, เซิร์ฟเวอร์ใหม่ หรือสภาพแวดล้อมใหม่ ได้อย่างง่ายดายและราบรื่นที่สุด
+คู่มือนี้จัดทำขึ้นเพื่อให้คุณสามารถนำโปรเจกต์ **DropWay** ไปเปิดใช้งานบนเครื่องคอมพิวเตอร์เครื่องใหม่, เซิร์ฟเวอร์ใหม่ หรือสภาพแวดล้อมใหม่ ได้อย่างง่ายดายและราบรื่นที่สุด โดยใช้ **Neon Serverless PostgreSQL** เป็นฐานข้อมูลหลักเพียงแห่งเดียว
 
 ---
 
@@ -8,7 +8,7 @@
 
 1. **Node.js**: เวอร์ชัน 18 ขึ้นไป (แนะนำ Node.js 20 หรือ 22 LTS)
 2. **Git**: ติดตั้งบนเครื่องของคุณ
-3. **บัญชี Supabase**: สมัครฟรีได้ที่ [supabase.com](https://supabase.com)
+3. **บัญชี Neon**: สมัครฟรีได้ที่ [neon.tech](https://neon.tech)
 
 ---
 
@@ -27,17 +27,17 @@ npm install
 
 ---
 
-### ขั้นตอนที่ 3: สร้างและเตรียมฐานข้อมูลบน Supabase
+### ขั้นตอนที่ 3: รับ Connection String จาก Neon
 
-1. เข้าไปที่ [Supabase Dashboard](https://supabase.com/dashboard)
-2. กดปุ่ม **"New project"** (ตั้งชื่อโปรเจกต์ เช่น `dropway-db` และตั้ง Database Password)
-3. เมื่อสร้างโปรเจกต์เสร็จสมบูรณ์ ให้ไปที่เมนู **SQL Editor** ที่แถบเมนูด้านซ้าย (ไอคอน `>_`)
-4. กด **+ New query**
-5. เปิดไฟล์ [`supabase/schema.sql`](./supabase/schema.sql) ในโปรเจกต์นี้ คัดลอกเนื้อหาทั้งหมดไปวางในช่อง SQL Query
-6. กดปุ่ม **Run** เพื่อสร้างตาราง `houses`, `user_navigation_houses`, วิว `navigation_view`, Indexes และ RLS Policies ทั้งหมด
-7. *(ทางเลือก)* หากต้องการข้อมูลบ้านตัวอย่าง 10 หลังเพื่อทดสอบทันที:
-   - เปิดไฟล์ [`supabase/seed.sql`](./supabase/seed.sql)
-   - นำไปวางใน SQL Editor แล้วกด **Run**
+1. เข้าไปที่ [Neon Console](https://console.neon.tech)
+2. กดปุ่ม **"Create Project"** (เลือก Region ที่ใกล้ประเทศไทยที่สุด เช่น `ap-southeast-1` Singapore หรือ `aws-ap-southeast-1`)
+3. ที่หน้า Dashboard หัวข้อ **"Connection Details"** ให้เลือกแท็บ **"Connection string"**
+4. คัดลอกข้อความ Connection string มา เช่น:
+   ```text
+   postgresql://neondb_owner:npg_xxxxxxxxxxxx@ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+   ```
+
+> 💡 **หมายเหตุสำคัญ:** คุณไม่จำเป็นต้องเข้าไปกดรันคำสั่ง SQL สร้างตารางล่วงหน้า เพราะ DropWay มีระบบ **Auto-Schema Creation** เมื่อคุณอัปโหลดไฟล์ CSV ผ่านหน้าเว็บ ระบบจะสร้างตาราง `houses`, `user_navigation_houses`, วิว `navigation_view` และ Index ทั้งหมดให้อัตโนมัติทันที หรือหากต้องการสร้างด้วยตนเองสามารถนำสคริปต์จาก [`neon/schema.sql`](./neon/schema.sql) ไปรันที่ Neon SQL Editor ได้เช่นกัน
 
 ---
 
@@ -47,26 +47,21 @@ npm install
    ```bash
    cp .env.example .env.local
    ```
-2. เปิด Supabase Dashboard -> ไปที่ **Project Settings** (ไอคอนฟันเฟืองล่างซ้าย) -> เมนู **API**
-3. คัดลอกค่า 2 ตัวนี้:
-   - **Project URL** (เช่น `https://xyzcompany.supabase.co`)
-   - **Project API Keys** (เลือกตัวที่เป็น `anon` `public`)
-4. เปิดไฟล์ `.env.local` ในโปรเจกต์แล้วใส่ค่าลงไป:
+2. เปิดไฟล์ `.env.local` ในโปรเจกต์แล้วใส่ค่า `DATABASE_URL`:
    ```env
-   NEXT_PUBLIC_SUPABASE_URL=https://xyzcompany.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...
+   DATABASE_URL=postgresql://neondb_owner:your-password@ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
    ```
-5. บันทึกไฟล์
+3. บันทึกไฟล์
 
 ---
 
 ### ขั้นตอนที่ 5: ทดสอบการเชื่อมต่อและเริ่มรันเว็บ
 
-1. **รันทดสอบการเชื่อมต่อ Supabase:**
+1. **รันทดสอบการเชื่อมต่อ Neon:**
    ```bash
-   npm run test:supabase
+   npm run test:neon
    ```
-   *เมื่อการเชื่อมต่อถูกต้อง จะขึ้นข้อความสีเขียว `✓` ยืนยันการเชื่อมต่อตารางทั้งหมด*
+   *เมื่อการเชื่อมต่อถูกต้อง จะขึ้นข้อความสีเขียว `✓` ยืนยันการเชื่อมต่อและสถานะตาราง*
 
 2. **เริ่มรัน Development Server:**
    ```bash
@@ -83,22 +78,18 @@ npm install
 | `npm run dev` | รันเว็บสำหรับพัฒนา (Development Mode) |
 | `npm run build` | บิลด์โค้ดสำหรับนำขึ้น Production |
 | `npm run start` | รันเซิร์ฟเวอร์หลังจากการบิลด์เสร็จ |
-| `npm run test:supabase` | ทดสอบการเชื่อมต่อ Supabase และโครงสร้างตาราง |
-| `npm run check` | ตรวจสอบความถูกต้องของโปรเจกต์ทั้งหมด (Types + Lint + DB) |
+| `npm run test:neon` | ทดสอบการเชื่อมต่อ Neon PostgreSQL และโครงสร้างตาราง |
+| `npm run check` | ตรวจสอบความถูกต้องของโปรเจกต์ทั้งหมด (Types + Lint + Neon DB) |
 | `npm run lint` | ตรวจสอบคุณภาพโค้ดด้วย ESLint |
 
 ---
 
 ## ❓ การแก้ไขปัญหาที่พบบ่อย (Troubleshooting & FAQ)
 
-### 1. หน้าเว็บแจ้งเตือนว่าไม่พบการตั้งค่า Supabase หรือล็อกอินไม่ได้
-- **สาเหตุ:** ยังไม่ได้สร้างไฟล์ `.env.local` หรือยังไม่ได้ระบุค่า URL / Key
-- **วิธีแก้:** ตรวจสอบว่ามีไฟล์ `.env.local` อยู่ที่ root ของโปรเจกต์ และชื่อตัวแปรสะกดถูกต้อง (`NEXT_PUBLIC_SUPABASE_URL` และ `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+### 1. หน้าเว็บแจ้งเตือนว่ายังไม่ได้ตั้งค่า DATABASE_URL
+- **สาเหตุ:** ยังไม่ได้สร้างไฟล์ `.env.local` หรือยังไม่ได้ระบุค่า Connection String
+- **วิธีแก้:** ตรวจสอบว่ามีไฟล์ `.env.local` อยู่ที่ root ของโปรเจกต์ และมีบรรทัด `DATABASE_URL=postgresql://...`
 
-### 2. สมัครสมาชิกแล้ว แต่ล็อกอินไม่ได้ (Email not confirmed)
-- **สาเหตุ:** การตั้งค่าเริ่มต้นของ Supabase ต้องกดยืนยันอีเมลก่อนเข้าใช้งาน
-- **วิธีแก้:** เข้าไปที่ Supabase Dashboard -> **Authentication** -> **Providers** -> **Email** -> ปิดสวิตช์ **"Confirm email"** หากต้องการให้ผู้ใช้สมัครแล้วล็อกอินได้ทันทีโดยไม่ต้องรอยืนยันอีเมล
-
-### 3. รัน `npm run test:supabase` แล้วขึ้นสีแดงว่าไม่พบตาราง
-- **สาเหตุ:** ยังไม่ได้รันคำสั่งใน `supabase/schema.sql`
-- **วิธีแก้:** เปิดไฟล์ `supabase/schema.sql` แล้วนำไปรันใน Supabase SQL Editor
+### 2. รัน `npm run test:neon` แล้วขึ้นแจ้งเตือนว่ายังไม่มีตาราง
+- **สาเหตุ:** เป็นฐานข้อมูลที่สร้างใหม่
+- **วิธีแก้:** สามารถเข้าหน้าเว็บ `/houses` แล้วกด "นำเข้า CSV" เพื่อเลือกไฟล์ตัวอย่าง [data/sample-houses.csv](./data/sample-houses.csv) ระบบจะสร้างตารางและบันทึกข้อมูล 27 จุดส่งให้ทันทีอัตโนมัติ
