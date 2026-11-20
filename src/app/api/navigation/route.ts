@@ -45,12 +45,16 @@ export async function POST(request: NextRequest) {
     const userId = body.user_id || "default-user";
     const navNote = body.nav_note || null;
     const navPriority = body.nav_priority ?? 0;
+    const trackingNumber =
+      typeof body.tracking_number === "string" && body.tracking_number.trim()
+        ? body.tracking_number.trim().toUpperCase()
+        : null;
 
     const result = await sql`
       INSERT INTO public.user_navigation_houses (
-        user_id, house_id, nav_note, nav_priority, delivery_status
+        user_id, house_id, nav_note, nav_priority, delivery_status, tracking_number
       ) VALUES (
-        ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending'
+        ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending', ${trackingNumber}
       )
       RETURNING *;
     `;

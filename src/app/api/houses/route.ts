@@ -35,13 +35,13 @@ export async function GET(request: NextRequest) {
            OR address ILIKE ${term}
            OR note ILIKE ${term}
         ORDER BY created_at DESC
-        LIMIT 5000;
+        LIMIT 50000;
       `;
     } else {
       houses = await sql`
         SELECT * FROM public.houses
         ORDER BY created_at DESC
-        LIMIT 5000;
+        LIMIT 50000;
       `;
     }
 

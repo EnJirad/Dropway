@@ -17,9 +17,11 @@ import {
   RotateCcw,
   Search,
   AlertCircle,
+  ScanText,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
+import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
 
 const SCANNER_REGION_ID = "qr-scan-region";
 const UUID_PATTERN =
@@ -124,6 +126,51 @@ async function findHouseByCode(raw: string): Promise<House | null> {
   return null;
 }
 
+type IdentifyResult = {
+  house: House | null;
+  candidates: HouseMatch[];
+  tracking: string | null;
+};
+
+/**
+ * ระบุบ้านจากข้อความที่สแกน/อ่านจากฉลาก
+ * UUID → ค้น id ตรง ๆ, นอกนั้นส่งไปเทียบชื่อ + บ้านเลขที่ + เบอร์ + เลขพัสดุที่เคยบันทึก
+ */
+async function identify(raw: string): Promise<IdentifyResult> {
+  const text = raw.trim();
+  const tracking = extractTracking(text);
+
+  if (UUID_IN_TEXT.test(text)) {
+    const house = await findHouseByCode(text);
+    if (house) return { house, candidates: [], tracking: null };
+  }
+
+  let candidates: HouseMatch[] = [];
+  try {
+    const res = await fetch("/api/houses/match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const json = await res.json();
+    if (Array.isArray(json.candidates)) candidates = json.candidates;
+  } catch (err) {
+    console.error("Match error:", err);
+  }
+
+  const top = candidates[0];
+  if (top && (top.level === "exact" || top.level === "high")) {
+    return { house: top.house, candidates: candidates.slice(1), tracking };
+  }
+
+  if (candidates.length === 0 && text.length <= 80 && !text.includes("\n")) {
+    const house = await findHouseByCode(text);
+    if (house) return { house, candidates: [], tracking };
+  }
+
+  return { house: null, candidates, tracking };
+}
+
 function cameraErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
   if (/permission|notallowed|denied|blocked/i.test(message)) {
@@ -142,6 +189,7 @@ export default function ScanPage() {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const handlingRef = useRef(false);
   const startingRef = useRef(false);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   const [starting, setStarting] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -151,6 +199,9 @@ export default function ScanPage() {
   const [result, setResult] = useState<House | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [lastCode, setLastCode] = useState("");
+  const [candidates, setCandidates] = useState<HouseMatch[]>([]);
+  const [tracking, setTracking] = useState<string | null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
 
   const [manualCode, setManualCode] = useState("");
   const [adding, setAdding] = useState(false);
@@ -180,6 +231,63 @@ export default function ScanPage() {
     };
   }, [stopScanner]);
 
+  const applyIdentify = useCallback(async (text: string): Promise<boolean> => {
+    setCandidates([]);
+    setTracking(null);
+    const found = await identify(text);
+    setTracking(found.tracking);
+    setCandidates(found.candidates);
+    if (found.house) {
+      setResult(found.house);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // ถ่ายรูปฉลากพัสดุ → อ่านข้อความด้วย OCR (ไทย+อังกฤษ) → เทียบกับคลังบ้าน
+  const scanPhoto = useCallback(
+    async (file: File) => {
+      if (handlingRef.current) return;
+      handlingRef.current = true;
+      setOcrBusy(true);
+      setResult(null);
+      setNotFound(false);
+      setAdded(false);
+      try {
+        const { createWorker } = await import("tesseract.js");
+        const worker = await createWorker(["tha", "eng"]);
+        let text = "";
+        try {
+          const out = await worker.recognize(file);
+          text = out.data.text;
+        } finally {
+          await worker.terminate();
+        }
+        if (!text.trim()) {
+          setNotFound(true);
+          toast.error("อ่านข้อความจากรูปไม่ได้ ลองถ่ายให้ชัดขึ้น");
+          return;
+        }
+        setLastCode(text.replace(/\s+/g, " ").trim().slice(0, 200));
+        const found = await applyIdentify(text);
+        if (found) {
+          toast.success("พบบ้านแล้ว");
+        } else {
+          setNotFound(true);
+          toast.error("ไม่พบบ้านที่ตรงกับฉลากนี้");
+        }
+      } catch (error) {
+        console.error(error);
+        setNotFound(true);
+        toast.error("อ่านฉลากไม่สำเร็จ");
+      } finally {
+        setOcrBusy(false);
+        handlingRef.current = false;
+      }
+    },
+    [applyIdentify],
+  );
+
   const handleDecoded = useCallback(async (text: string) => {
     if (handlingRef.current) return;
     const trimmed = text.trim();
@@ -200,9 +308,8 @@ export default function ScanPage() {
       setAdded(false);
       setLooking(true);
 
-      const house = await findHouseByCode(trimmed);
-      if (house) {
-        setResult(house);
+      const found = await applyIdentify(trimmed);
+      if (found) {
         toast.success("พบบ้านแล้ว");
       } else {
         setNotFound(true);
@@ -218,7 +325,7 @@ export default function ScanPage() {
       setLooking(false);
       handlingRef.current = false;
     }
-  }, []);
+  }, [applyIdentify]);
 
   const startScanner = useCallback(async () => {
     if (startingRef.current || scanning) return;
@@ -266,6 +373,8 @@ export default function ScanPage() {
     setNotFound(false);
     setLastCode("");
     setAdded(false);
+    setCandidates([]);
+    setTracking(null);
 
     const scanner = scannerRef.current;
     if (scanner) {
@@ -289,7 +398,7 @@ export default function ScanPage() {
         const res = await fetch("/api/navigation", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ house_id: result.id }),
+          body: JSON.stringify({ house_id: result.id, tracking_number: tracking }),
         });
         const json = await res.json().catch(() => ({}));
 
@@ -316,7 +425,7 @@ export default function ScanPage() {
         setAdding(false);
       }
     },
-    [adding, result],
+    [adding, result, tracking],
   );
 
   const hasCoords = result?.lat != null && result?.lng != null;
@@ -343,9 +452,8 @@ export default function ScanPage() {
     setAdded(false);
     setLastCode(code);
     try {
-      const house = await findHouseByCode(code);
-      if (house) {
-        setResult(house);
+      const found = await applyIdentify(code);
+      if (found) {
         toast.success("พบบ้านแล้ว");
       } else {
         setNotFound(true);
@@ -358,7 +466,7 @@ export default function ScanPage() {
     } finally {
       setLooking(false);
     }
-  }, [manualCode]);
+  }, [applyIdentify, manualCode]);
 
   const searchHref = result
     ? `/houses?search=${encodeURIComponent(
@@ -438,6 +546,32 @@ export default function ScanPage() {
             )}
           </div>
 
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void scanPhoto(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => photoInputRef.current?.click()}
+            disabled={ocrBusy || looking}
+            className="btn btn-secondary mt-2 w-full"
+          >
+            {ocrBusy ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <ScanText className="h-4 w-4" aria-hidden="true" />
+            )}
+            {ocrBusy ? "กำลังอ่านฉลาก..." : "ถ่ายรูปฉลากพัสดุ (อ่านชื่อ/ที่อยู่)"}
+          </button>
+
           {cameraError && (
             <div
               role="alert"
@@ -466,6 +600,47 @@ export default function ScanPage() {
         </div>
       </section>
 
+      {candidates.length > 0 && (
+        <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
+          <h2 className="text-sm font-bold text-gray-900">
+            {result ? "บ้านใกล้เคียงอื่น ๆ" : "เลือกบ้านที่ใกล้เคียงที่สุด"}
+          </h2>
+          <ul className="mt-3 space-y-2">
+            {candidates.map((m) => (
+              <li key={m.house.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResult(m.house);
+                    setCandidates([]);
+                    setNotFound(false);
+                    setAdded(false);
+                  }}
+                  className="w-full rounded-xl border border-gray-200 p-3 text-left text-sm hover:bg-gray-50"
+                >
+                  <span className="block font-bold text-gray-900">
+                    {m.house.full_name || "ไม่มีชื่อ"}
+                  </span>
+                  <span className="block break-words text-gray-600">
+                    {m.house.address || "-"}
+                  </span>
+                  <span className="mt-1 block text-xs font-medium text-teal-700">
+                    {[
+                      m.matched.name ? "ชื่อตรง" : null,
+                      m.matched.houseNo ? "บ้านเลขที่ตรง" : null,
+                      m.matched.phone ? "เบอร์ตรง" : null,
+                      m.matched.tracking ? "เลขพัสดุเคยบันทึก" : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" • ") || "ตรงบางส่วน"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {result && (
         <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
           <div className="flex items-start gap-3">
@@ -479,6 +654,11 @@ export default function ScanPage() {
               <h2 className="mt-0.5 break-words text-xl font-bold text-gray-900">
                 {result.full_name || "ไม่มีชื่อ"}
               </h2>
+              {tracking && (
+                <p className="mt-1 break-all text-xs font-medium text-gray-600">
+                  เลขพัสดุ: <span className="font-mono">{tracking}</span>
+                </p>
+              )}
             </div>
           </div>
 

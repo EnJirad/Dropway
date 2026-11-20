@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS public.user_navigation_houses (
     CONSTRAINT check_delivery_status CHECK (delivery_status IN ('pending', 'delivered', 'reported'))
 );
 
+ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+
 -- 3. สร้าง View navigation_view สำหรับเชื่อมข้อมูลระหว่างการนำทางและบ้าน
 CREATE OR REPLACE VIEW public.navigation_view AS
 SELECT
@@ -65,7 +67,8 @@ SELECT
     h.note,
     h.quantity,
     h.created_at,
-    h.updated_at
+    h.updated_at,
+    unh.tracking_number
 FROM public.user_navigation_houses unh
 LEFT JOIN public.houses h ON unh.house_id = h.id;
 

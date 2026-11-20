@@ -290,7 +290,12 @@ function csvRecordToHouse(row: CsvRecord): HouseImportRow | null {
   const note = readCsvField(row, CSV_FIELDS.note);
   const rawQuantity = readCsvField(row, CSV_FIELDS.quantity);
 
-  if (!fullName && !phone && !address && !note) return null;
+  const lat = parseCsvNumber(readCsvField(row, CSV_FIELDS.lat));
+  const lng = parseCsvNumber(readCsvField(row, CSV_FIELDS.lng));
+
+  if (!fullName && !phone && !address && !note && lat === null && lng === null) {
+    return null;
+  }
 
   const quantity = rawQuantity ? Number(rawQuantity) : null;
 
@@ -299,8 +304,8 @@ function csvRecordToHouse(row: CsvRecord): HouseImportRow | null {
     full_name: fullName,
     phone,
     address,
-    lat: parseCsvNumber(readCsvField(row, CSV_FIELDS.lat)),
-    lng: parseCsvNumber(readCsvField(row, CSV_FIELDS.lng)),
+    lat,
+    lng,
     note,
     ...(quantity !== null && Number.isFinite(quantity)
       ? { quantity: Math.max(0, Math.round(quantity)) }
@@ -1251,20 +1256,31 @@ export default function HousesPage() {
 
       // นำเข้าผ่าน Server API (รองรับ Neon + Auto-create table อัตโนมัติหากยังไม่มี)
       setImportProgress("กำลังตรวจสอบและนำเข้าข้อมูล (สร้างฐานข้อมูลอัตโนมัติหากยังไม่มี)...");
-      const uploadRes = await fetch("/api/houses/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rows),
-      });
-      const uploadResult = await uploadRes.json();
-      if (!uploadRes.ok || !uploadResult.success) {
-        throw new Error(uploadResult.error || "อัพโหลดไม่สำเร็จ");
+      // ส่งทีละ 500 แถว กันไฟล์ใหญ่เกินขนาดคำขอ/หมดเวลา
+      const BATCH = 500;
+      let insertedTotal = 0;
+      let duplicatesTotal = 0;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        setImportProgress(
+          `กำลังนำเข้า ${Math.min(i + BATCH, rows.length)}/${rows.length} แถว...`,
+        );
+        const uploadRes = await fetch("/api/houses/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rows.slice(i, i + BATCH)),
+        });
+        const uploadResult = await uploadRes.json();
+        if (!uploadRes.ok || !uploadResult.success) {
+          throw new Error(uploadResult.error || "อัพโหลดไม่สำเร็จ");
+        }
+        insertedTotal += uploadResult.inserted || 0;
+        duplicatesTotal += uploadResult.duplicates || 0;
       }
 
       await loadHouses();
-      const skipped = (uploadResult.duplicates || 0) + invalid + duplicatedInFile;
+      const skipped = duplicatesTotal + invalid + duplicatedInFile;
       toast.success(
-        `เพิ่ม ${uploadResult.inserted} รายการ${
+        `เพิ่ม ${insertedTotal} รายการ${
           skipped > 0 ? ` • ข้าม ${skipped} รายการ (ซ้ำ/ไม่ถูกต้อง)` : ""
         }`
       );

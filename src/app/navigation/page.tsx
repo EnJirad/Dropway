@@ -2367,6 +2367,11 @@ export default function NavigationPage() {
                         </span>
                         <h3 className="text-wrap-safe line-clamp-2 text-lg font-bold text-orange-700">
                           {h.full_name || "ไม่มีชื่อ"}
+                    {h.tracking_number && (
+                      <span className="ml-2 break-all font-mono text-xs font-medium text-gray-500">
+                        {h.tracking_number}
+                      </span>
+                    )}
                         </h3>
                         {!h.lat && !h.lng && (
                           <span className="badge badge-amber">ไม่มีพิกัด</span>

@@ -33,6 +33,9 @@ export type NavigationHouse = {
   // ⭐ คอมเมนต์/บันทึกเพิ่มเติมของคนขับ (ใหม่)
   driver_note?: string | null;
 
+  // เลขพัสดุที่สแกนตอนเพิ่มเข้าคิวนำทาง
+  tracking_number?: string | null;
+
   // ⭐ ข้อมูลการโทร (ถ้าจะใช้ในอนาคต)
   call_count?: number;
   call_note?: string | null;

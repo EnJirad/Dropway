@@ -1,0 +1,143 @@
+import type { House } from "@/types/house";
+
+export type MatchLevel = "exact" | "high" | "medium";
+
+export type HouseMatch = {
+  house: House;
+  score: number;
+  level: MatchLevel;
+  matched: { name: boolean; houseNo: boolean; phone: boolean; tracking: boolean };
+};
+
+const UUID_G = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const TITLE_RE =
+  /^(นางสาว|นาง|นาย|น\.ส\.|น\.ส|นส\.|คุณ|เด็กชาย|เด็กหญิง|ด\.ช\.|ด\.ญ\.|mr\.?|mrs\.?|miss|ms\.?)\s*/i;
+
+// สร้างด้วย RegExp เพื่อใช้ \p{...} โดยไม่ผูกกับ target ของ TypeScript
+const NON_ALNUM = new RegExp("[^\\p{L}\\p{N}\\p{M}]", "gu");
+const MARKS = new RegExp("\\p{M}", "gu");
+
+/** ตัดช่องว่าง เครื่องหมาย และสระ/วรรณยุกต์ลอย (OCR ภาษาไทยอ่านพลาดบ่อย) */
+function skeleton(value: string): string {
+  return value.toLowerCase().replace(NON_ALNUM, "").replace(MARKS, "");
+}
+
+function bigrams(value: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < value.length - 1; i += 1) out.push(value.slice(i, i + 2));
+  return out;
+}
+
+/** เลขพัสดุ: ลำดับความน่าจะเป็น รูปแบบไปรษณีย์/ขนส่งที่รู้จัก > ตัวอักษร+ตัวเลข > ตัวเลขล้วน */
+export function extractTracking(text: string): string | null {
+  const upper = text.replace(UUID_G, " ").toUpperCase();
+  const tokens = upper.match(/\b[A-Z0-9]{8,20}\b/g) ?? [];
+  let best: string | null = null;
+  let bestRank = 0;
+  for (const token of tokens) {
+    if (token.replace(/\D/g, "").length < 6) continue;
+    if (/^0\d{9}$/.test(token)) continue; // เบอร์โทร
+    let rank = 1;
+    if (
+      /^[A-Z]{2}\d{9}[A-Z]{2}$/.test(token) ||
+      /^(TH|SPX|KEX|FLASH|JT|LEX|SHP|NIM|BEST|DHL)/.test(token)
+    ) {
+      rank = 3;
+    } else if (/[A-Z]/.test(token)) {
+      rank = 2;
+    }
+    if (rank > bestRank) {
+      best = token;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+function nameScore(fullName: string | null, textSkel: string): number {
+  if (!fullName) return 0;
+  const base = fullName.trim();
+  const noTitle = base.replace(TITLE_RE, "");
+  const name = noTitle.length >= 2 ? noTitle : base;
+  const full = skeleton(name);
+  if (full.length < 3) return 0;
+  if (textSkel.includes(full)) return 1;
+
+  let best = 0;
+  const tokens = name
+    .split(/\s+/)
+    .map(skeleton)
+    .filter((t) => t.length >= 3);
+  if (tokens.length > 0) {
+    const hit = tokens.filter((t) => textSkel.includes(t)).length;
+    best = hit / tokens.length;
+  }
+  if (full.length >= 5) {
+    const grams = bigrams(full);
+    const pool = new Set(bigrams(textSkel));
+    const coverage = grams.filter((g) => pool.has(g)).length / grams.length;
+    if (coverage >= 0.85) best = Math.max(best, 0.8);
+  }
+  return best;
+}
+
+function usableNumber(n: string): boolean {
+  return n.length >= 2 || n.includes("/");
+}
+
+/** บ้านเลขที่จากที่อยู่: ตัวเลขก่อน "ม." / "หมู่" เช่น "590 | 347 ม.3" → 590, 347 */
+function houseNumbers(address: string | null): string[] {
+  if (!address) return [];
+  const head = address.split(/ม\.|หมู่|moo|\bm\./i)[0];
+  return (head.match(/\d{1,5}(?:\/\d{1,4})?/g) ?? []).filter(usableNumber);
+}
+
+function textNumbers(text: string): Set<string> {
+  const cleaned = text.replace(/(?:ม\.|หมู่(?:ที่)?|moo\.?)\s*\d+/gi, " ");
+  const found = new Set<string>();
+  const re = /(?:^|\D)(\d{1,5}(?:\/\d{1,4})?)(?!\d)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cleaned)) !== null) {
+    if (usableNumber(m[1])) found.add(m[1]);
+  }
+  return found;
+}
+
+/**
+ * เทียบข้อความจากฉลาก (OCR / บาร์โค้ด) กับบ้านในคลัง
+ * ให้คะแนนจาก เลขพัสดุที่เคยบันทึก, เบอร์โทร, ชื่อ และบ้านเลขที่
+ */
+export function matchHouses(
+  houses: House[],
+  text: string,
+  trackedHouseId?: string | null,
+): HouseMatch[] {
+  const textSkel = skeleton(text.replace(UUID_G, " "));
+  const nums = textNumbers(text);
+  const digits = text.replace(/\D/g, "");
+  const out: HouseMatch[] = [];
+
+  for (const house of houses) {
+    const n = nameScore(house.full_name, textSkel);
+    const name = n >= 0.6;
+    const houseNo = houseNumbers(house.address).some((x) => nums.has(x));
+    const phoneDigits = (house.phone ?? "").replace(/\D/g, "").slice(-9);
+    const phone = phoneDigits.length === 9 && digits.includes(phoneDigits);
+    const tracking = !!trackedHouseId && house.id === trackedHouseId;
+
+    const score =
+      (tracking ? 100 : 0) +
+      (phone ? 60 : 0) +
+      (name ? Math.round(n * 50) : 0) +
+      (houseNo ? 40 : 0);
+    if (score === 0) continue;
+
+    let level: MatchLevel = "medium";
+    if (tracking || (n >= 0.99 && houseNo)) level = "exact";
+    else if (phone || (name && houseNo)) level = "high";
+
+    out.push({ house, score, level, matched: { name, houseNo, phone, tracking } });
+  }
+
+  return out.sort((a, b) => b.score - a.score).slice(0, 5);
+}

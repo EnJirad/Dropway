@@ -80,6 +80,9 @@ export async function ensureDatabaseSchema(): Promise<void> {
       );
     `;
 
+    // 2.1 เลขพัสดุ (เพิ่มภายหลัง จึงใช้ ALTER เพื่อรองรับฐานข้อมูลเดิม)
+    await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS tracking_number TEXT;`;
+
     // 3. วิว navigation_view
     await sql`
       CREATE OR REPLACE VIEW public.navigation_view AS
@@ -105,7 +108,8 @@ export async function ensureDatabaseSchema(): Promise<void> {
         h.note,
         h.quantity,
         h.created_at,
-        h.updated_at
+        h.updated_at,
+        unh.tracking_number
       FROM public.user_navigation_houses unh
       LEFT JOIN public.houses h ON unh.house_id = h.id;
     `;
