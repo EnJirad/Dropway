@@ -18,6 +18,12 @@ import { composeAddress, type LabelFields } from "@/lib/labelParse";
 import { isAiReady, loadSettings } from "@/lib/aiSettings";
 import { readLabelWithAi } from "@/lib/aiScan";
 import { disposeOcr, recognizeLabel, warmupOcr } from "@/lib/ocr";
+import {
+  ANALYSIS_MAX_SIDE,
+  analyzeCanvas,
+  frameDifference,
+  looksLikeLabel,
+} from "@/lib/labelDetect";
 import { useModalKeyboardBehavior } from "@/lib/viewport";
 import BlockingLoader from "@/components/BlockingLoader";
 import ScanResultSheet, { type ScanPrimary } from "@/components/ScanResultSheet";
@@ -31,6 +37,14 @@ import {
 } from "@/lib/scanMerge";
 
 const SCANNER_REGION_ID = "qr-scan-region";
+/** จำสถานะเปิด/ปิดโหมดสแกนอัตโนมัติ */
+const AUTO_SCAN_KEY = "dropway_auto_scan_v1";
+/** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง */
+const AUTO_HOLD_MS = 1700;
+/** ตรวจเฟรมทุกกี่ ms */
+const AUTO_TICK_MS = 450;
+/** หลังเพิ่มสำเร็จ เว้นช่วงก่อนสแกนชิ้นถัดไป กันสแกนซ้ำใบเดิม */
+const AUTO_COOLDOWN_MS = 2600;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UUID_IN_TEXT =
@@ -246,6 +260,13 @@ export default function ScanPage() {
   const [added, setAdded] = useState(false);
   const [lastCode, setLastCode] = useState("");
 
+  /** สแกนอัตโนมัติ: จ่อใบปะหน้าแล้วระบบถ่ายให้เอง */
+  const [autoMode, setAutoMode] = useState(false);
+  const [autoStatus, setAutoStatus] = useState<"idle" | "searching" | "holding" | "capturing">(
+    "idle",
+  );
+  const cooldownRef = useRef(0);
+
   useModalKeyboardBehavior();
 
   const stopScanner = useCallback(async () => {
@@ -269,6 +290,11 @@ export default function ScanPage() {
   useEffect(() => {
     const settings = loadSettings();
     if (settings.scanMode === "ocr" || settings.fallbackToOcr) warmupOcr();
+    try {
+      setAutoMode(window.localStorage.getItem(AUTO_SCAN_KEY) === "1");
+    } catch {
+      // storage ถูกบล็อก — ใช้ค่าเริ่มต้น (ปิด)
+    }
     return () => {
       void disposeOcr();
     };
@@ -294,7 +320,7 @@ export default function ScanPage() {
 
   // ถ่ายรูปฉลากพัสดุ → AI และ OCR อ่านพร้อมกัน → เทียบกับคลังบ้าน
   const scanPhoto = useCallback(
-    async (file: File) => {
+    async (file: File, options: { auto?: boolean } = {}) => {
       if (handlingRef.current) return;
       handlingRef.current = true;
       setLoading(true);
@@ -364,6 +390,12 @@ export default function ScanPage() {
         if (!outcome.text.trim()) {
           setLoading(false);
           setStage(null);
+          if (options.auto) {
+            // โหมดอัตโนมัติ: อย่าเปิดชีตด้วยข้อมูลว่าง ให้จ่อใหม่แล้วสแกนต่อ
+            setAutoStatus("searching");
+            toast.error("ยังอ่านไม่เจอ — จ่อใบปะหน้าให้ชิดขึ้นแล้วถือไว้อีกนิด");
+            return;
+          }
           setSheetOpen(true);
           toast.error("อ่านข้อมูลจากรูปไม่ได้ — กรอกเองในหน้าต่างผลสแกน");
           return;
@@ -394,6 +426,113 @@ export default function ScanPage() {
     [applyIdentify],
   );
 
+  /** ดึงภาพนิ่งจากวิดีโอที่กำลังเล่นอยู่ (ไม่ต้องต่อกล้องใหม่) */
+  const captureFrame = useCallback(async (): Promise<File | null> => {
+    const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
+    if (!video || !video.videoWidth || !video.videoHeight) return null;
+    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return new Promise((resolve) => {
+      canvas.toBlob(
+        (blob) => {
+          resolve(
+            blob
+              ? new File([blob], `auto-label-${Date.now()}.jpg`, { type: "image/jpeg" })
+              : null,
+          );
+        },
+        "image/jpeg",
+        0.85,
+      );
+    });
+  }, []);
+
+  // ตรวจเฟรมจากกล้องตลอดเวลา: ถ้าเห็นใบปะหน้านิ่งต่อเนื่อง ~1.7 วิ → ถ่ายและอ่านเอง
+  useEffect(() => {
+    if (!autoMode || !scanning || loading || sheetOpen) {
+      setAutoStatus("idle");
+      return;
+    }
+    const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
+    if (!video) {
+      setAutoStatus("idle");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    let prevGray: Uint8ClampedArray | null = null;
+    let holdStart = 0;
+    let cancelled = false;
+    let busy = false;
+
+    const tick = () => {
+      if (cancelled || busy || handlingRef.current) return;
+      if (Date.now() < cooldownRef.current) return;
+      if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+
+      const maxSide = Math.max(video.videoWidth, video.videoHeight);
+      const scale = Math.min(1, ANALYSIS_MAX_SIDE / maxSide);
+      const width = Math.max(8, Math.round(video.videoWidth * scale));
+      const height = Math.max(8, Math.round(video.videoHeight * scale));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+
+      // ใช้เฉพาะกลางภาพ 70% — ใบปะหน้าอยู่กลางกรอบเสมอ พื้นหลังไม่มากวน
+      const cropW = Math.round(video.videoWidth * 0.7);
+      const cropH = Math.round(video.videoHeight * 0.7);
+      const cropX = Math.round((video.videoWidth - cropW) / 2);
+      const cropY = Math.round((video.videoHeight - cropH) / 2);
+      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, width, height);
+
+      const frame = analyzeCanvas(canvas);
+      if (!frame) return;
+
+      const steady = prevGray ? frameDifference(prevGray, frame.gray) < 7 : false;
+      const label = looksLikeLabel(frame);
+      prevGray = frame.gray;
+
+      if (!label) {
+        holdStart = 0;
+        setAutoStatus("searching");
+        return;
+      }
+
+      if (!holdStart) holdStart = Date.now();
+      if (steady && Date.now() - holdStart >= AUTO_HOLD_MS) {
+        holdStart = 0;
+        busy = true;
+        setAutoStatus("capturing");
+        void captureFrame().then((file) => {
+          if (!file) {
+            busy = false;
+            setAutoStatus("searching");
+            return;
+          }
+          void scanPhoto(file, { auto: true });
+        });
+        return;
+      }
+      setAutoStatus(steady ? "holding" : "searching");
+    };
+
+    const timer = window.setInterval(tick, AUTO_TICK_MS);
+    tick();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [autoMode, scanning, loading, sheetOpen, captureFrame, scanPhoto]);
+
   const handleDecoded = useCallback(
     async (text: string) => {
       if (handlingRef.current) return;
@@ -412,11 +551,13 @@ export default function ScanPage() {
       setLastCode(trimmed);
 
       try {
-        // พักภาพหลังอ่านได้ครั้งแรก กันการสแกนซ้ำรัว ๆ
-        try {
-          scannerRef.current?.pause(true);
-        } catch {
-          // ignore
+        // พักภาพหลังอ่านได้ครั้งแรก กันการสแกนซ้ำรัว ๆ (โหมดออโต้ปล่อยกล้องไว้)
+        if (!autoMode) {
+          try {
+            scannerRef.current?.pause(true);
+          } catch {
+            // ignore
+          }
         }
 
         const found = await applyIdentify(trimmed);
@@ -437,7 +578,7 @@ export default function ScanPage() {
         handlingRef.current = false;
       }
     },
-    [applyIdentify],
+    [applyIdentify, autoMode],
   );
 
   const startScanner = useCallback(async () => {
@@ -480,6 +621,19 @@ export default function ScanPage() {
       setStarting(false);
     }
   }, [handleDecoded, scanning]);
+
+  const toggleAuto = useCallback(() => {
+    setAutoMode((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(AUTO_SCAN_KEY, next ? "1" : "0");
+      } catch {
+        // เก็บไม่ได้ก็ยังใช้ในรอบนี้ได้
+      }
+      if (next && !scanning && !startingRef.current) void startScanner();
+      return next;
+    });
+  }, [scanning, startScanner]);
 
   const scanAgain = useCallback(async () => {
     setSheetOpen(false);
@@ -613,10 +767,26 @@ export default function ScanPage() {
 
   const addPrimary = useCallback(
     async (form: LabelFields): Promise<boolean> => {
-      if (result) return addHouseToNavigation(result, form.tracking.trim() || null);
-      return addDraftToNavigation(form);
+      const ok = result
+        ? await addHouseToNavigation(result, form.tracking.trim() || null)
+        : await addDraftToNavigation(form);
+      if (ok) {
+        // เพิ่มเสร็จ → ปิดหน้าผลสแกนทันที (โหมดอัตโนมัติจะกลับไปสแกนชิ้นถัดไปเอง)
+        setSheetOpen(false);
+        cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
+        setAutoStatus("idle");
+        if (autoMode) {
+          // กล้องอาจถูก pause ตอนอ่าน QR — เปิดต่อเพื่อสแกนชิ้นถัดไป
+          try {
+            scannerRef.current?.resume();
+          } catch {
+            // resume ไม่ได้ก็ปล่อยให้ผู้ใช้กดเปิดกล้องเอง
+          }
+        }
+      }
+      return ok;
     },
-    [result, addHouseToNavigation, addDraftToNavigation],
+    [result, addHouseToNavigation, addDraftToNavigation, autoMode],
   );
 
   /** บันทึกข้อมูล: มีบ้านอยู่แล้ว = แก้ไขบ้านหลังนั้น, ยังไม่มี = สร้างบ้านใหม่ */
@@ -810,19 +980,74 @@ export default function ScanPage() {
               if (file) void scanPhoto(file);
             }}
           />
-          <button
-            type="button"
-            onClick={() => photoInputRef.current?.click()}
-            disabled={loading}
-            className="btn btn-secondary mt-2 w-full"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <ScanText className="h-4 w-4" aria-hidden="true" />
-            )}
-            {loading ? "กำลังทำงาน..." : "ถ่ายรูปฉลากพัสดุ (อ่านชื่อ/ที่อยู่)"}
-          </button>
+          <div className="mt-2 flex items-stretch gap-2">
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              disabled={loading}
+              className="btn btn-secondary min-w-0 flex-1"
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <ScanText className="h-4 w-4" aria-hidden="true" />
+              )}
+              <span className="truncate">
+                {loading ? "กำลังทำงาน..." : "ถ่ายรูปฉลากพัสดุ"}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoMode}
+              aria-label="สแกนอัตโนมัติ (ออโต้)"
+              onClick={toggleAuto}
+              className={`flex min-h-11 flex-none items-center gap-2 rounded-full border px-3 text-xs font-bold transition-colors ${
+                autoMode
+                  ? "border-teal-600 bg-teal-50 text-teal-800"
+                  : "border-gray-200 bg-white text-gray-600"
+              }`}
+            >
+              <span
+                className={`relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors ${
+                  autoMode ? "bg-teal-600" : "bg-gray-300"
+                }`}
+                aria-hidden="true"
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                    autoMode ? "translate-x-[22px]" : "translate-x-0.5"
+                  }`}
+                />
+              </span>
+              ออโต้
+            </button>
+          </div>
+
+          {autoMode && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-2 flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2 text-[11px] font-medium text-teal-900"
+            >
+              <span
+                className={`h-2 w-2 flex-none rounded-full ${
+                  autoStatus === "holding" || autoStatus === "capturing"
+                    ? "animate-pulse bg-teal-600"
+                    : "bg-teal-400"
+                }`}
+                aria-hidden="true"
+              />
+              {!scanning
+                ? "ออโต้เปิดอยู่ — กด “เปิดกล้องสแกน” เพื่อเริ่มสแกนต่อเนื่อง"
+                : autoStatus === "holding"
+                  ? "ถือไว้อีกนิด ระบบกำลังจะถ่ายให้เอง…"
+                  : autoStatus === "capturing"
+                    ? "กำลังอ่านฉลาก…"
+                    : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
+            </div>
+          )}
 
           {cameraError && (
             <div

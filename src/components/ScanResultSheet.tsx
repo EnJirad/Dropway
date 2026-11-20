@@ -314,28 +314,12 @@ export default function ScanResultSheet({
             )}
 
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => void handleAdd()}
-                disabled={busy || saving || added || Boolean(sameParcel)}
-                className="btn btn-primary col-span-3 sm:col-span-1"
-              >
-                {busy ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <PlusCircle className="h-4 w-4" aria-hidden="true" />
-                )}
-                {sameParcel
-                  ? "พัสดุชิ้นเดียวกัน"
-                  : added
-                    ? "เพิ่มแล้ว"
-                    : "เพิ่มเข้านำทาง"}
-              </button>
+              {/* ซ้าย: บันทึก */}
               <button
                 type="button"
                 onClick={() => void handleSave()}
                 disabled={busy || saving || !canSave}
-                className="btn btn-secondary col-span-2 sm:col-span-1"
+                className="btn btn-secondary gap-1 px-2 text-xs sm:text-sm"
               >
                 {saving ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -344,16 +328,36 @@ export default function ScanResultSheet({
                 ) : (
                   <Save className="h-4 w-4" aria-hidden="true" />
                 )}
-                {editing ? "บันทึกการแก้ไข" : "บันทึก"}
+                <span className="truncate">{editing ? "บันทึกแก้ไข" : "บันทึก"}</span>
               </button>
+
+              {/* กลาง: แก้ไข */}
               <button
                 type="button"
                 onClick={() => setEditing((value) => !value)}
                 disabled={busy || saving}
-                className="btn btn-secondary col-span-1"
+                className="btn btn-secondary gap-1 px-2 text-xs sm:text-sm"
               >
                 <Edit3 className="h-4 w-4" aria-hidden="true" />
-                {editing ? "ยกเลิก" : "แก้ไข"}
+                <span className="truncate">{editing ? "ยกเลิก" : "แก้ไข"}</span>
+              </button>
+
+              {/* ขวา: เพิ่ม (เพิ่มเสร็จปิดหน้าทันที) */}
+              <button
+                type="button"
+                onClick={() => void handleAdd()}
+                disabled={busy || saving || added || Boolean(sameParcel)}
+                aria-label="เพิ่มเข้านำทางวันนี้"
+                className="btn btn-primary gap-1 px-2 text-xs sm:text-sm"
+              >
+                {busy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <PlusCircle className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span className="truncate">
+                  {sameParcel ? "ชิ้นเดียวกัน" : added ? "เพิ่มแล้ว" : "เพิ่ม"}
+                </span>
               </button>
             </div>
 
