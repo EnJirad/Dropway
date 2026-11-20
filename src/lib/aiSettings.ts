@@ -92,9 +92,9 @@ export function defaultSettings(): AppSettings {
     apiKeys: { gemini: "", openai: "", anthropic: "" },
     models: { ...DEFAULT_MODELS },
     fallbackToOcr: true,
-    imageMaxSide: 1600,
+    imageMaxSide: 1280,
     fallbackModels: { ...DEFAULT_FALLBACK_MODELS },
-    aiMaxAttempts: 3,
+    aiMaxAttempts: 2,
     aiTimeoutSec: 15,
   };
 }

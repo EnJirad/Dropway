@@ -86,6 +86,14 @@ async function callGemini(
   b64: string,
   signal: AbortSignal,
 ): Promise<string> {
+  // โมเดล 2.5+ คิดก่อนตอบ (thinking) ทำให้ช้า — ปิดเมื่อโมเดลรองรับ
+  const generationConfig: Record<string, unknown> = {
+    temperature: 0,
+    responseMimeType: "application/json",
+  };
+  if (/gemini-(2\.5|3)/i.test(model)) {
+    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -94,7 +102,7 @@ async function callGemini(
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: mime, data: b64 } }] }],
-        generationConfig: { temperature: 0, responseMimeType: "application/json" },
+        generationConfig,
       }),
     },
   );
@@ -119,6 +127,7 @@ async function callOpenAI(
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: 400,
       response_format: { type: "json_object" },
       messages: [
         {

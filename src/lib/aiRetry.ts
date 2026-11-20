@@ -110,11 +110,11 @@ export type RetryConfig = {
 };
 
 export const DEFAULT_RETRY: RetryConfig = {
-  maxAttempts: 3,
-  baseDelayMs: 800,
-  maxDelayMs: 4000,
-  timeoutMs: 15_000,
-  totalBudgetMs: 28_000,
+  maxAttempts: 2,
+  baseDelayMs: 400,
+  maxDelayMs: 2000,
+  timeoutMs: 12_000,
+  totalBudgetMs: 20_000,
 };
 
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {

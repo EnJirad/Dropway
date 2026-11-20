@@ -1,4 +1,5 @@
 import type { House } from "@/types/house";
+import { normalizeNumericRuns, thaiDigitsToArabic } from "@/lib/textNormalize";
 
 export type MatchLevel = "exact" | "high" | "medium";
 
@@ -34,7 +35,9 @@ function bigrams(value: string): string[] {
 
 /** เลขพัสดุ: ลำดับความน่าจะเป็น รูปแบบไปรษณีย์/ขนส่งที่รู้จัก > ตัวอักษร+ตัวเลข > ตัวเลขล้วน */
 export function extractTracking(text: string): string | null {
-  const upper = text.replace(UUID_G, " ").toUpperCase();
+  const upper = normalizeNumericRuns(thaiDigitsToArabic(text))
+    .replace(UUID_G, " ")
+    .toUpperCase();
   const tokens = upper.match(/\b[A-Z0-9]{8,20}\b/g) ?? [];
   let best: string | null = null;
   let bestRank = 0;

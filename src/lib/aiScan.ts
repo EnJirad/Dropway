@@ -3,7 +3,7 @@ import type { LabelFields } from "@/lib/labelParse";
 import { normalizeFields } from "@/lib/scanMerge";
 
 /** เพดานสุดท้ายฝั่งเบราว์เซอร์ เซิร์ฟเวอร์จำกัดเวลารวมของตัวเองไว้ต่ำกว่านี้แล้ว */
-const CLIENT_TIMEOUT_MS = 45_000;
+const CLIENT_TIMEOUT_MS = 25_000;
 
 export type AiScanResult =
   | { ok: true; fields: LabelFields; model: string | null; usedFallback: boolean }
@@ -26,7 +26,7 @@ async function imageToBase64(file: File, maxSide: number): Promise<string> {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("ย่อรูปไม่ได้");
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
     return dataUrl.slice(dataUrl.indexOf(",") + 1);
   } finally {
     URL.revokeObjectURL(url);

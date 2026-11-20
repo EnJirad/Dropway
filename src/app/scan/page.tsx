@@ -1,23 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Html5Qrcode } from "html5-qrcode";
 import {
+  AlertCircle,
   Camera,
   CameraOff,
-  CheckCircle2,
-  Home,
   Loader2,
-  MapPin,
-  Navigation as NavigationIcon,
-  Phone,
-  PlusCircle,
   QrCode,
-  RotateCcw,
-  Search,
-  AlertCircle,
   ScanText,
+  Search,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
@@ -25,22 +17,18 @@ import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
 import { composeAddress, type LabelFields } from "@/lib/labelParse";
 import { isAiReady, loadSettings } from "@/lib/aiSettings";
 import { readLabelWithAi } from "@/lib/aiScan";
+import { disposeOcr, recognizeLabel, warmupOcr } from "@/lib/ocr";
+import { useModalKeyboardBehavior } from "@/lib/viewport";
+import BlockingLoader from "@/components/BlockingLoader";
+import ScanResultSheet, { type ScanPrimary } from "@/components/ScanResultSheet";
 import {
   buildScanOutcome,
   describeScanStatus,
+  emptyFields,
   hasAnyField,
   type AiInput,
   type ScanNotice,
 } from "@/lib/scanMerge";
-
-const DRAFT_FIELDS: { key: keyof LabelFields; label: string }[] = [
-  { key: "name", label: "ชื่อผู้รับ" },
-  { key: "phone", label: "เบอร์โทร" },
-  { key: "houseNo", label: "บ้านเลขที่" },
-  { key: "address", label: "ที่อยู่" },
-  { key: "postalCode", label: "รหัสไปรษณีย์" },
-  { key: "tracking", label: "เลขพัสดุ" },
-];
 
 const SCANNER_REGION_ID = "qr-scan-region";
 const UUID_PATTERN =
@@ -149,6 +137,8 @@ type IdentifyResult = {
   house: House | null;
   candidates: HouseMatch[];
   tracking: string | null;
+  /** ข้อมูลการจับคู่ของผลหลัก (ใช้แสดงเหตุผลบนการ์ด) */
+  match: HouseMatch | null;
 };
 
 /**
@@ -161,7 +151,7 @@ async function identify(raw: string): Promise<IdentifyResult> {
 
   if (UUID_IN_TEXT.test(text)) {
     const house = await findHouseByCode(text);
-    if (house) return { house, candidates: [], tracking: null };
+    if (house) return { house, candidates: [], tracking: null, match: null };
   }
 
   let candidates: HouseMatch[] = [];
@@ -179,15 +169,20 @@ async function identify(raw: string): Promise<IdentifyResult> {
 
   const top = candidates[0];
   if (top && (top.level === "exact" || top.level === "high")) {
-    return { house: top.house, candidates: candidates.slice(1), tracking };
+    return {
+      house: top.house,
+      candidates: candidates.slice(1),
+      tracking,
+      match: top,
+    };
   }
 
   if (candidates.length === 0 && text.length <= 80 && !text.includes("\n")) {
     const house = await findHouseByCode(text);
-    if (house) return { house, candidates: [], tracking };
+    if (house) return { house, candidates: [], tracking, match: null };
   }
 
-  return { house: null, candidates, tracking };
+  return { house: null, candidates, tracking, match: null };
 }
 
 function cameraErrorMessage(error: unknown): string {
@@ -214,21 +209,25 @@ export default function ScanPage() {
   const [scanning, setScanning] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  const [looking, setLooking] = useState(false);
+  /** กำลังทำงานอยู่ (อ่านฉลาก/ค้นหา) — ใช้เปิดตัวโหลดที่บล็อกทั้งจอ */
+  const [loading, setLoading] = useState(false);
+  const [loadingTitle, setLoadingTitle] = useState("กำลังอ่านฉลาก");
+  const [stage, setStage] = useState<string | null>(null);
+
   const [result, setResult] = useState<House | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [lastCode, setLastCode] = useState("");
+  const [primaryMatch, setPrimaryMatch] = useState<HouseMatch | null>(null);
   const [candidates, setCandidates] = useState<HouseMatch[]>([]);
   const [tracking, setTracking] = useState<string | null>(null);
-  const [ocrBusy, setOcrBusy] = useState(false);
-  // ข้อมูลที่แยกจากฉลาก (แก้ไขได้ก่อนเพิ่มเข้านำทางวันนี้)
-  const [draft, setDraft] = useState<LabelFields | null>(null);
-  // สถานะการอ่านฉลาก (เช่น AI ใช้ไม่ได้แต่ OCR สำเร็จ)
+  const [draft, setDraft] = useState<LabelFields>(emptyFields());
   const [notice, setNotice] = useState<ScanNotice | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const [manualCode, setManualCode] = useState("");
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState(false);
+  const [lastCode, setLastCode] = useState("");
+
+  useModalKeyboardBehavior();
 
   const stopScanner = useCallback(async () => {
     const scanner = scannerRef.current;
@@ -247,6 +246,15 @@ export default function ScanPage() {
     }
   }, []);
 
+  // อุ่น OCR ล่วงหน้าเพื่อให้สแกนครั้งแรกเร็ว แล้วปิด worker ตอนออกจากหน้า
+  useEffect(() => {
+    const settings = loadSettings();
+    if (settings.scanMode === "ocr" || settings.fallbackToOcr) warmupOcr();
+    return () => {
+      void disposeOcr();
+    };
+  }, []);
+
   // ปิดกล้องเมื่อออกจากหน้า
   useEffect(() => {
     return () => {
@@ -255,128 +263,160 @@ export default function ScanPage() {
   }, [stopScanner]);
 
   const applyIdentify = useCallback(async (text: string): Promise<boolean> => {
-    setCandidates([]);
-    setTracking(null);
     const found = await identify(text);
     setTracking(found.tracking);
     setCandidates(found.candidates);
-    if (found.house) {
-      setResult(found.house);
-      return true;
-    }
-    return false;
+    setResult(found.house);
+    setPrimaryMatch(found.match);
+    setAdded(false);
+    return Boolean(found.house);
   }, []);
 
-  // ถ่ายรูปฉลากพัสดุ → อ่านข้อความด้วย OCR (ไทย+อังกฤษ) → เทียบกับคลังบ้าน
+  // ถ่ายรูปฉลากพัสดุ → AI และ OCR อ่านพร้อมกัน → เทียบกับคลังบ้าน
   const scanPhoto = useCallback(
     async (file: File) => {
       if (handlingRef.current) return;
       handlingRef.current = true;
-      setOcrBusy(true);
-      setDraft(null);
+      setLoading(true);
+      setLoadingTitle("กำลังอ่านฉลาก");
+      setStage("กำลังเตรียมรูป…");
+      setSheetOpen(false);
+      setDraft(emptyFields());
       setNotice(null);
       setResult(null);
-      setNotFound(false);
+      setPrimaryMatch(null);
+      setCandidates([]);
+      setTracking(null);
       setAdded(false);
+      setLastCode("");
+
       try {
-        // โหมด AI (ตั้งค่าในหน้า "ตั้งค่า") readLabelWithAi ไม่ throw: ล้มเหลวจะได้ { ok: false }
         const settings = loadSettings();
         const useAi = isAiReady(settings);
-        let ai: AiInput = null;
-        if (useAi) {
-          const r = await readLabelWithAi(file, settings);
-          ai = r.ok ? { ok: true, fields: r.fields } : { ok: false, message: r.message };
-        }
-        const aiGood = !!ai && ai.ok && hasAnyField(buildScanOutcome({ ai }).fields);
+        // OCR ในเครื่องทำงานคู่ขนานได้ เพราะใช้ CPU ขณะที่ AI รอเน็ต — เวลารวมจึงเท่าตัวที่ช้าสุด
+        const runOcr = !useAi || settings.fallbackToOcr;
 
-        // OCR ในเครื่อง: ข้ามเมื่อ AI อ่านได้แล้ว หรือผู้ใช้ปิด OCR สำรองไว้
-        let ocrText = "";
-        let ocrFailed = false;
-        const ocrSkipped = useAi && (aiGood || !settings.fallbackToOcr);
-        if (!ocrSkipped) {
-          try {
-            const { createWorker } = await import("tesseract.js");
-            const worker = await createWorker(["tha", "eng"]);
-            try {
-              const out = await worker.recognize(file);
-              ocrText = out?.data?.text ?? "";
-            } finally {
-              await worker.terminate();
-            }
-          } catch (ocrError) {
-            ocrFailed = true;
-            console.error("OCR error:", ocrError instanceof Error ? ocrError.name : "unknown");
+        if (useAi) {
+          setStage(
+            runOcr
+              ? "กำลังอ่านฉลากด้วย AI และ OCR พร้อมกัน…"
+              : "กำลังอ่านฉลากด้วย AI…",
+          );
+        } else {
+          setStage("กำลังอ่านฉลากด้วย OCR ในเครื่อง…");
+        }
+
+        // เริ่ม OCR ไว้ก่อน (ทำงานคู่ขนานกับ AI) แต่ถ้า AI อ่านได้ครบก็ไม่ต้องรอ OCR
+        const ocrPromise = runOcr ? recognizeLabel(file) : null;
+        const aiResult = useAi ? await readLabelWithAi(file, settings) : null;
+        const aiOk = Boolean(aiResult && aiResult.ok && hasAnyField(aiResult.fields));
+
+        let ocrAttempt: Awaited<ReturnType<typeof recognizeLabel>> | null = null;
+        if (ocrPromise) {
+          if (aiOk) {
+            // AI ได้ข้อมูลแล้ว → คืนผลทันที ไม่รอ OCR (worker ยังอุ่นไว้ใช้ครั้งถัดไป)
+            void ocrPromise;
+          } else if (useAi) {
+            setStage("AI อ่านได้ไม่ครบ — กำลังอ่านซ้ำด้วย OCR ในเครื่อง…");
+            ocrAttempt = await ocrPromise;
+          } else {
+            ocrAttempt = await ocrPromise;
           }
         }
 
-        const outcome = buildScanOutcome({ ocrText, ocrFailed, ocrSkipped, ai });
-        const text = outcome.text;
+        const ai: AiInput = aiResult
+          ? aiResult.ok
+            ? { ok: true, fields: aiResult.fields }
+            : { ok: false, message: aiResult.message }
+          : null;
+
+        const outcome = buildScanOutcome({
+          ocrText: ocrAttempt && ocrAttempt.ok ? ocrAttempt.text : "",
+          ocrFailed: Boolean(ocrAttempt && !ocrAttempt.ok),
+          ocrSkipped: !runOcr || aiOk,
+          ai,
+        });
+
         setNotice(describeScanStatus(outcome));
-        // ช่องที่อ่านไม่ได้เป็นค่าว่าง ผู้ใช้กรอกเองได้เสมอ
         setDraft(outcome.fields);
-        if (!text.trim()) {
-          setNotFound(true);
-          toast.error("อ่านข้อมูลจากรูปไม่ได้ กรอกข้อมูลเองหรือถ่ายใหม่");
+
+        if (!outcome.text.trim()) {
+          setLoading(false);
+          setStage(null);
+          setSheetOpen(true);
+          toast.error("อ่านข้อมูลจากรูปไม่ได้ — กรอกเองในหน้าต่างผลสแกน");
           return;
         }
-        setLastCode(text.replace(/\s+/g, " ").trim().slice(0, 200));
-        const found = await applyIdentify(text);
-        if (found) {
-          toast.success("พบบ้านแล้ว");
-        } else {
-          setNotFound(true);
-          toast.error("ไม่พบบ้านที่ตรงกับฉลากนี้");
-        }
+
+        setLastCode(outcome.text.replace(/\s+/g, " ").trim().slice(0, 200));
+        setStage("กำลังเทียบกับคลังบ้าน…");
+        const found = await applyIdentify(outcome.text);
+
+        setLoading(false);
+        setStage(null);
+        setSheetOpen(true);
+        if (found) toast.success("พบบ้านแล้ว");
+        else toast.error("ไม่พบบ้านที่ตรงกับฉลากนี้");
       } catch (error) {
         console.error(error);
-        setNotFound(true);
+        setNotice({ tone: "error", text: "อ่านฉลากไม่สำเร็จ กรอกข้อมูลเองหรือถ่ายใหม่" });
+        setLoading(false);
+        setStage(null);
+        setSheetOpen(true);
         toast.error("อ่านฉลากไม่สำเร็จ");
       } finally {
-        setOcrBusy(false);
+        setLoading(false);
+        setStage(null);
         handlingRef.current = false;
       }
     },
     [applyIdentify],
   );
 
-  const handleDecoded = useCallback(async (text: string) => {
-    if (handlingRef.current) return;
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const handleDecoded = useCallback(
+    async (text: string) => {
+      if (handlingRef.current) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
 
-    handlingRef.current = true;
-    try {
-      // พักภาพหลังอ่านได้ครั้งแรก กันการสแกนซ้ำรัว ๆ
-      try {
-        scannerRef.current?.pause(true);
-      } catch {
-        // ignore
-      }
-
-      setLastCode(trimmed);
-      setResult(null);
-      setNotFound(false);
+      handlingRef.current = true;
+      setLoading(true);
+      setLoadingTitle("กำลังค้นหาบ้าน");
+      setStage("กำลังเทียบรหัสกับคลังบ้าน…");
+      setSheetOpen(false);
+      setDraft(emptyFields());
+      setNotice(null);
       setAdded(false);
-      setLooking(true);
+      setLastCode(trimmed);
 
-      const found = await applyIdentify(trimmed);
-      if (found) {
-        toast.success("พบบ้านแล้ว");
-      } else {
-        setNotFound(true);
-        toast.error("ไม่พบข้อมูลบ้านจากรหัสนี้");
+      try {
+        // พักภาพหลังอ่านได้ครั้งแรก กันการสแกนซ้ำรัว ๆ
+        try {
+          scannerRef.current?.pause(true);
+        } catch {
+          // ignore
+        }
+
+        const found = await applyIdentify(trimmed);
+        setLoading(false);
+        setStage(null);
+        setSheetOpen(true);
+        if (found) toast.success("พบบ้านแล้ว");
+        else toast.error("ไม่พบข้อมูลบ้านจากรหัสนี้");
+      } catch (error) {
+        console.error(error);
+        setLoading(false);
+        setStage(null);
+        setSheetOpen(true);
+        toast.error("ค้นหาไม่สำเร็จ");
+      } finally {
+        setLoading(false);
+        setStage(null);
+        handlingRef.current = false;
       }
-    } catch (error) {
-      console.error(error);
-      toast.error(
-        "ค้นหาไม่สำเร็จ: " + (error instanceof Error ? error.message : ""),
-      );
-      setNotFound(true);
-    } finally {
-      setLooking(false);
-      handlingRef.current = false;
-    }
-  }, [applyIdentify]);
+    },
+    [applyIdentify],
+  );
 
   const startScanner = useCallback(async () => {
     if (startingRef.current || scanning) return;
@@ -420,11 +460,12 @@ export default function ScanPage() {
   }, [handleDecoded, scanning]);
 
   const scanAgain = useCallback(async () => {
+    setSheetOpen(false);
     setResult(null);
-    setNotFound(false);
+    setPrimaryMatch(null);
     setLastCode("");
     setAdded(false);
-    setDraft(null);
+    setDraft(emptyFields());
     setNotice(null);
     setCandidates([]);
     setTracking(null);
@@ -442,9 +483,10 @@ export default function ScanPage() {
     await startScanner();
   }, [startScanner, stopScanner]);
 
-  const addToNavigation = useCallback(
-    async (silent = false) => {
-      if (!result || adding) return;
+  /** เพิ่มบ้านที่มีอยู่แล้วเข้าคิวนำทางวันนี้ */
+  const addHouseToNavigation = useCallback(
+    async (house: House, trackingNumber: string | null): Promise<boolean> => {
+      if (adding) return false;
       setAdding(true);
       try {
         const post = (force: boolean) =>
@@ -452,8 +494,8 @@ export default function ScanPage() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              house_id: result.id,
-              tracking_number: tracking,
+              house_id: house.id,
+              tracking_number: trackingNumber,
               as_parcel: true,
               force,
             }),
@@ -465,14 +507,14 @@ export default function ScanPage() {
         if (res.status === 409 && json.duplicate) {
           if (json.same_stop) {
             setAdded(true);
-            if (!silent) toast.error("บ้านนี้มีพัสดุเลขนี้ในคิวแล้ว");
-            return;
+            toast.error("บ้านนี้มีพัสดุเลขนี้ในคิวแล้ว");
+            return true;
           }
           // เลขพัสดุซ้ำกับบ้านอื่นในวันนี้ → เตือนและให้ผู้ใช้ยืนยันเอง
           const proceed = window.confirm(
-            `เลขพัสดุ ${tracking ?? ""} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
+            `เลขพัสดุ ${trackingNumber ?? ""} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
           );
-          if (!proceed) return;
+          if (!proceed) return false;
           res = await post(true);
           json = await res.json().catch(() => ({}));
         }
@@ -480,78 +522,157 @@ export default function ScanPage() {
         if (!res.ok) throw new Error(json.error || "เพิ่มไม่สำเร็จ");
 
         setAdded(true);
-        if (!silent) {
-          const count = Number(json.parcel_count ?? 1);
-          toast.success(
-            json.added_to_existing
-              ? `เพิ่มพัสดุชิ้นที่ ${count} ที่บ้านนี้แล้ว`
-              : "เพิ่มเข้าคิวนำทางแล้ว",
-          );
-        }
+        const count = Number(json.parcel_count ?? 1);
+        toast.success(
+          json.added_to_existing
+            ? `เพิ่มพัสดุชิ้นที่ ${count} ที่บ้านนี้แล้ว`
+            : "เพิ่มเข้าคิวนำทางแล้ว",
+        );
+        return true;
       } catch (error) {
         console.error(error);
         toast.error("เพิ่มเข้าคิวนำทางไม่สำเร็จ");
+        return false;
       } finally {
         setAdding(false);
       }
     },
-    [adding, result, tracking],
+    [adding],
   );
 
-  // เพิ่มพัสดุเข้านำทางวันนี้จากข้อมูลฉลากที่แก้แล้ว โดยไม่สร้างบ้านถาวร
-  const addDraftToNavigation = useCallback(async () => {
-    if (!draft || adding) return;
-    const address = composeAddress(draft);
-    if (!draft.name.trim() && !draft.phone.trim() && !address) {
-      toast.error("กรอกอย่างน้อยชื่อ เบอร์ หรือที่อยู่");
-      return;
-    }
-    setAdding(true);
-    try {
-      const post = (force: boolean) =>
-        fetch("/api/navigation", {
+  /** เพิ่มปลายทางของวันนี้จากข้อมูลฉลาก โดยยังไม่สร้างบ้านถาวร */
+  const addDraftToNavigation = useCallback(
+    async (form: LabelFields): Promise<boolean> => {
+      if (adding) return false;
+      const address = composeAddress(form);
+      if (!form.name.trim() && !form.phone.trim() && !address) {
+        toast.error("กรอกอย่างน้อยชื่อ เบอร์ หรือที่อยู่");
+        return false;
+      }
+      setAdding(true);
+      try {
+        const post = (force: boolean) =>
+          fetch("/api/navigation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              destination: { name: form.name, phone: form.phone, address },
+              tracking_number: form.tracking.trim() || null,
+              as_parcel: true,
+              force,
+            }),
+          });
+
+        let res = await post(false);
+        let json = await res.json().catch(() => ({}));
+        if (res.status === 409 && json.duplicate) {
+          const proceed = window.confirm(
+            `เลขพัสดุ ${form.tracking} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
+          );
+          if (!proceed) return false;
+          res = await post(true);
+          json = await res.json().catch(() => ({}));
+        }
+        if (!res.ok) throw new Error(json.error || "เพิ่มไม่สำเร็จ");
+        setAdded(true);
+        toast.success("เพิ่มเข้านำทางวันนี้แล้ว (ยังไม่ได้บันทึกเป็นบ้านถาวร)");
+        return true;
+      } catch (error) {
+        console.error(error);
+        toast.error("เพิ่มเข้านำทางไม่สำเร็จ");
+        return false;
+      } finally {
+        setAdding(false);
+      }
+    },
+    [adding],
+  );
+
+  const addPrimary = useCallback(
+    async (form: LabelFields): Promise<boolean> => {
+      if (result) return addHouseToNavigation(result, form.tracking.trim() || null);
+      return addDraftToNavigation(form);
+    },
+    [result, addHouseToNavigation, addDraftToNavigation],
+  );
+
+  /** บันทึกข้อมูล: มีบ้านอยู่แล้ว = แก้ไขบ้านหลังนั้น, ยังไม่มี = สร้างบ้านใหม่ */
+  const savePrimary = useCallback(
+    async (form: LabelFields): Promise<boolean> => {
+      const address = composeAddress(form);
+      if (!form.name.trim() && !form.phone.trim() && !address) {
+        toast.error("กรอกอย่างน้อยชื่อ เบอร์ หรือที่อยู่");
+        return false;
+      }
+      if (adding) return false;
+      setAdding(true);
+      try {
+        const payload = {
+          full_name: form.name.trim() || null,
+          phone: form.phone.trim() || null,
+          address: address || null,
+        };
+
+        if (result) {
+          const res = await fetch(`/api/houses/${encodeURIComponent(result.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payload,
+              lat: result.lat,
+              lng: result.lng,
+              note: result.note,
+              quantity: result.quantity,
+            }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(json.error || "บันทึกการแก้ไขไม่สำเร็จ");
+          if (json.data) setResult(json.data as House);
+          toast.success("บันทึกการแก้ไขแล้ว");
+          return true;
+        }
+
+        const res = await fetch("/api/houses", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            destination: { name: draft.name, phone: draft.phone, address },
-            tracking_number: draft.tracking.trim() || null,
-            as_parcel: true,
-            force,
-          }),
+          body: JSON.stringify({ ...payload, note: null, quantity: 1 }),
         });
-
-      let res = await post(false);
-      let json = await res.json().catch(() => ({}));
-      if (res.status === 409 && json.duplicate) {
-        const proceed = window.confirm(
-          `เลขพัสดุ ${draft.tracking} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
-        );
-        if (!proceed) return;
-        res = await post(true);
-        json = await res.json().catch(() => ({}));
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || "บันทึกบ้านใหม่ไม่สำเร็จ");
+        if (json.data) {
+          setResult(json.data as House);
+          setPrimaryMatch(null);
+        }
+        toast.success("บันทึกเป็นบ้านใหม่แล้ว");
+        return true;
+      } catch (error) {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "บันทึกไม่สำเร็จ");
+        return false;
+      } finally {
+        setAdding(false);
       }
-      if (!res.ok) throw new Error(json.error || "เพิ่มไม่สำเร็จ");
-      setAdded(true);
-      toast.success("เพิ่มเข้านำทางวันนี้แล้ว (ยังไม่ได้บันทึกเป็นบ้านถาวร)");
-    } catch (error) {
-      console.error(error);
-      toast.error("เพิ่มเข้านำทางไม่สำเร็จ");
-    } finally {
-      setAdding(false);
-    }
-  }, [adding, draft]);
+    },
+    [adding, result],
+  );
 
-  const hasCoords = result?.lat != null && result?.lng != null;
-
-  const navigateNow = useCallback(async () => {
-    if (!result) return;
-    if (result.lat == null || result.lng == null) {
-      toast.error("บ้านนี้ยังไม่มีพิกัด — เพิ่มพิกัดในหน้าคลังบ้านก่อน");
-      return;
-    }
-    await addToNavigation(true);
-    window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${result.lat},${result.lng}&travelmode=driving`;
-  }, [addToNavigation, result]);
+  // แตะบ้านแนะนำ → ยกขึ้นเป็นผลหลักบนสุด แล้วสลับหลังเดิมลงรายการแนะนำ
+  const selectCandidate = useCallback(
+    (candidate: HouseMatch) => {
+      const previous: HouseMatch | null =
+        result && primaryMatch && primaryMatch.house.id !== candidate.house.id
+          ? primaryMatch
+          : null;
+      setCandidates((current) => {
+        const rest = current.filter((c) => c.house.id !== candidate.house.id);
+        return previous ? [previous, ...rest] : rest;
+      });
+      setResult(candidate.house);
+      setPrimaryMatch(candidate);
+      setAdded(false);
+    },
+    [result, primaryMatch],
+  );
 
   const searchManual = useCallback(async () => {
     const code = manualCode.trim();
@@ -559,33 +680,37 @@ export default function ScanPage() {
       toast.error("กรอกหรือวางรหัสก่อนค้นหา");
       return;
     }
-    setLooking(true);
-    setResult(null);
-    setNotFound(false);
+    setLoading(true);
+    setLoadingTitle("กำลังค้นหาบ้าน");
+    setStage("กำลังค้นหาบ้านในคลัง…");
+    setSheetOpen(false);
+    setDraft(emptyFields());
+    setNotice(null);
     setAdded(false);
     setLastCode(code);
     try {
       const found = await applyIdentify(code);
-      if (found) {
-        toast.success("พบบ้านแล้ว");
-      } else {
-        setNotFound(true);
-        toast.error("ไม่พบข้อมูลบ้านจากรหัสนี้");
-      }
+      setLoading(false);
+      setStage(null);
+      setSheetOpen(true);
+      if (found) toast.success("พบบ้านแล้ว");
+      else toast.error("ไม่พบข้อมูลบ้านจากรหัสนี้");
     } catch (error) {
       console.error(error);
-      setNotFound(true);
+      setLoading(false);
+      setStage(null);
+      setSheetOpen(true);
       toast.error("ค้นหาไม่สำเร็จ");
     } finally {
-      setLooking(false);
+      setLoading(false);
+      setStage(null);
     }
   }, [applyIdentify, manualCode]);
 
-  const searchHref = result
-    ? `/houses?search=${encodeURIComponent(
-        result.full_name ?? result.phone ?? result.address ?? "",
-      )}`
-    : "/houses";
+  const primaryForSheet: ScanPrimary = {
+    house: result,
+    match: primaryMatch,
+  };
 
   return (
     <div className="page-shell mx-auto max-w-xl px-4 py-6 pb-32 sm:py-8 md:pb-8">
@@ -640,21 +765,11 @@ export default function ScanPage() {
               <button
                 type="button"
                 onClick={() => void startScanner()}
-                disabled={starting}
+                disabled={starting || loading}
                 className="btn btn-primary flex-1"
               >
                 <Camera className="h-4 w-4" aria-hidden="true" />
                 {starting ? "กำลังเปิดกล้อง..." : "เปิดกล้องสแกน"}
-              </button>
-            )}
-            {(result || notFound) && (
-              <button
-                type="button"
-                onClick={() => void scanAgain()}
-                className="btn btn-secondary flex-1"
-              >
-                <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                สแกนอีกครั้ง
               </button>
             )}
           </div>
@@ -674,15 +789,15 @@ export default function ScanPage() {
           <button
             type="button"
             onClick={() => photoInputRef.current?.click()}
-            disabled={ocrBusy || looking}
+            disabled={loading}
             className="btn btn-secondary mt-2 w-full"
           >
-            {ocrBusy ? (
+            {loading ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             ) : (
               <ScanText className="h-4 w-4" aria-hidden="true" />
             )}
-            {ocrBusy ? "กำลังอ่านฉลาก..." : "ถ่ายรูปฉลากพัสดุ (อ่านชื่อ/ที่อยู่)"}
+            {loading ? "กำลังทำงาน..." : "ถ่ายรูปฉลากพัสดุ (อ่านชื่อ/ที่อยู่)"}
           </button>
 
           {cameraError && (
@@ -695,219 +810,13 @@ export default function ScanPage() {
             </div>
           )}
 
-          {looking && (
-            <p
-              aria-live="polite"
-              className="mt-3 flex items-center gap-2 text-sm font-medium text-gray-600"
-            >
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              กำลังค้นหาบ้าน...
-            </p>
-          )}
-
-          {lastCode && !looking && (
+          {lastCode && !loading && (
             <p className="mt-3 break-all text-xs text-gray-500">
               รหัสที่อ่านได้: <span className="font-mono">{lastCode}</span>
             </p>
           )}
         </div>
       </section>
-
-      {notice && (
-        <div
-          role="status"
-          className={`mt-4 flex items-start gap-2 rounded-xl border p-3 text-sm ${
-            notice.tone === "error"
-              ? "border-red-200 bg-red-50 text-red-900"
-              : "border-amber-200 bg-amber-50 text-amber-900"
-          }`}
-        >
-          <AlertCircle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
-          <span>{notice.text}</span>
-        </div>
-      )}
-
-      {candidates.length > 0 && (
-        <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
-          <h2 className="text-sm font-bold text-gray-900">
-            {result ? "บ้านใกล้เคียงอื่น ๆ" : "เลือกบ้านที่ใกล้เคียงที่สุด"}
-          </h2>
-          <ul className="mt-3 space-y-2">
-            {candidates.map((m) => (
-              <li key={m.house.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResult(m.house);
-                    setCandidates([]);
-                    setNotFound(false);
-                    setAdded(false);
-                  }}
-                  className="w-full rounded-xl border border-gray-200 p-3 text-left text-sm hover:bg-gray-50"
-                >
-                  <span className="block font-bold text-gray-900">
-                    {m.house.full_name || "ไม่มีชื่อ"}
-                  </span>
-                  <span className="block break-words text-gray-600">
-                    {m.house.address || "-"}
-                  </span>
-                  <span className="mt-1 block text-xs font-medium text-teal-700">
-                    {[
-                      m.matched.name ? "ชื่อตรง" : null,
-                      m.matched.houseNo ? "บ้านเลขที่ตรง" : null,
-                      m.matched.phone ? "เบอร์ตรง" : null,
-                      m.conflicts.length > 0 ? "⚠ " + m.conflicts.join(" • ") : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" • ") || "ตรงบางส่วน"}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {result && (
-        <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
-          <div className="flex items-start gap-3">
-            <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-teal-50 text-teal-700">
-              <CheckCircle2 className="h-6 w-6" aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-wide text-teal-700">
-                พบบ้านในคลัง
-              </p>
-              <h2 className="mt-0.5 break-words text-xl font-bold text-gray-900">
-                {result.full_name || "ไม่มีชื่อ"}
-              </h2>
-              {tracking && (
-                <p className="mt-1 break-all text-xs font-medium text-gray-600">
-                  เลขพัสดุ: <span className="font-mono">{tracking}</span>
-                </p>
-              )}
-            </div>
-          </div>
-
-          <dl className="mt-4 space-y-2 text-sm">
-            {result.phone && (
-              <div className="flex items-start gap-2">
-                <Phone className="mt-0.5 h-4 w-4 flex-none text-gray-400" aria-hidden="true" />
-                <div>
-                  <dt className="sr-only">เบอร์โทร</dt>
-                  <dd>
-                    <a
-                      href={`tel:${result.phone}`}
-                      className="font-medium text-teal-700 underline-offset-2 hover:underline"
-                    >
-                      {result.phone}
-                    </a>
-                  </dd>
-                </div>
-              </div>
-            )}
-            {result.address && (
-              <div className="flex items-start gap-2">
-                <MapPin className="mt-0.5 h-4 w-4 flex-none text-gray-400" aria-hidden="true" />
-                <div>
-                  <dt className="sr-only">ที่อยู่</dt>
-                  <dd className="text-gray-700">{result.address}</dd>
-                </div>
-              </div>
-            )}
-            {result.note && (
-              <div className="rounded-lg bg-gray-50 px-3 py-2 text-gray-600">
-                <dt className="sr-only">หมายเหตุ</dt>
-                <dd>{result.note}</dd>
-              </div>
-            )}
-            {!hasCoords && (
-              <p className="text-xs font-medium text-amber-700">
-                บ้านนี้ยังไม่มีพิกัด — นำทางด้วย Google Maps ไม่ได้
-              </p>
-            )}
-          </dl>
-
-          <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => void navigateNow()}
-              disabled={!hasCoords}
-              className="btn btn-primary"
-            >
-              <NavigationIcon className="h-4 w-4" aria-hidden="true" />
-              นำทางทันที
-            </button>
-            <button
-              type="button"
-              onClick={() => void addToNavigation()}
-              disabled={adding || added}
-              className="btn btn-secondary"
-            >
-              <PlusCircle className="h-4 w-4" aria-hidden="true" />
-              {added ? "อยู่ในคิวนำทางแล้ว" : adding ? "กำลังเพิ่ม..." : "เพิ่มในรายการนำทาง"}
-            </button>
-            <Link
-              href={searchHref}
-              className="btn btn-secondary sm:col-span-2"
-            >
-              <Home className="h-4 w-4" aria-hidden="true" />
-              เปิดในคลังบ้าน
-            </Link>
-          </div>
-        </section>
-      )}
-
-      {notFound && !looking && (
-        <section className="card mt-4 p-4 sm:p-5" aria-live="polite">
-          <div className="flex items-start gap-2 text-amber-800">
-            <AlertCircle className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
-            <div>
-              <h2 className="font-bold">ไม่พบบ้านจากรหัสนี้</h2>
-              <p className="mt-1 text-sm">
-                ตรวจสอบว่า QR เป็นของบ้านในคลังนี้ หรือลองสแกนอีกครั้ง
-              </p>
-            </div>
-          </div>
-          {draft && (
-            <div className="mt-4 space-y-2">
-              <p className="text-xs font-bold text-gray-700">
-                ข้อมูลที่อ่านจากฉลาก (แก้ไขได้ ช่องว่างคืออ่านไม่ได้)
-              </p>
-              {DRAFT_FIELDS.map(({ key, label }) => (
-                <label key={key} className="block text-xs font-medium text-gray-600">
-                  {label}
-                  <input
-                    type="text"
-                    value={draft[key]}
-                    onChange={(event) =>
-                      setDraft((d) => (d ? { ...d, [key]: event.target.value } : d))
-                    }
-                    className="input mt-1 w-full"
-                  />
-                </label>
-              ))}
-              <button
-                type="button"
-                onClick={() => void addDraftToNavigation()}
-                disabled={adding || added}
-                className="btn btn-primary w-full"
-              >
-                <PlusCircle className="h-4 w-4" aria-hidden="true" />
-                {added ? "เพิ่มเข้านำทางวันนี้แล้ว" : adding ? "กำลังเพิ่ม..." : "เพิ่มเข้านำทางวันนี้"}
-              </button>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => void scanAgain()}
-            className="btn btn-secondary mt-4 w-full"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            สแกนอีกครั้ง
-          </button>
-        </section>
-      )}
 
       <section className="card mt-4 p-4 sm:p-5">
         <h2 className="text-sm font-bold text-gray-900">กรอกรหัสเอง</h2>
@@ -932,7 +841,7 @@ export default function ScanPage() {
           <button
             type="button"
             onClick={() => void searchManual()}
-            disabled={looking}
+            disabled={loading}
             className="btn btn-primary"
           >
             <Search className="h-4 w-4" aria-hidden="true" />
@@ -940,6 +849,29 @@ export default function ScanPage() {
           </button>
         </div>
       </section>
+
+      <BlockingLoader
+        open={loading}
+        title={loadingTitle}
+        stage={stage}
+        message="ระบบกำลังอ่านและเทียบข้อมูล กรุณารอสักครู่"
+      />
+
+      <ScanResultSheet
+        open={sheetOpen && !loading}
+        primary={primaryForSheet}
+        draft={draft}
+        candidates={candidates}
+        tracking={tracking}
+        notice={notice}
+        busy={adding}
+        added={added}
+        onClose={() => setSheetOpen(false)}
+        onAdd={addPrimary}
+        onSave={savePrimary}
+        onSelectCandidate={selectCandidate}
+        onScanAgain={() => void scanAgain()}
+      />
     </div>
   );
 }

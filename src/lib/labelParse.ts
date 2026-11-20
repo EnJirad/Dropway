@@ -1,4 +1,5 @@
 import { extractTracking } from "@/lib/parcelMatch";
+import { normalizeNumericRuns, normalizeOcrText } from "@/lib/textNormalize";
 
 /** ข้อมูลที่แยกได้จากฉลาก (ทุกช่องแก้ไขได้ก่อนยืนยัน ช่องที่อ่านไม่ได้เป็นสตริงว่าง ไม่เดา) */
 export type LabelFields = {
@@ -18,7 +19,8 @@ const ADDRESS_HINT_RE = /ม\.|หมู่|ต\.|อ\.|จ\.|ตำบล|อ�
 const PHONE_RE = /0[689]\d{8}|0[2-7]\d{7}/;
 
 function findPhone(line: string): string {
-  const compact = line.replace(/[\s-]/g, "");
+  // OCR อ่าน 0 เป็น O, 1 เป็น l ได้บ่อย — แก้เฉพาะกลุ่มที่เกือบเป็นตัวเลข
+  const compact = normalizeNumericRuns(line).replace(/[\s-]/g, "");
   return compact.match(PHONE_RE)?.[0] ?? "";
 }
 
@@ -33,7 +35,9 @@ function stripLabelPrefix(line: string): string {
  * ข้ามบรรทัดในส่วนของผู้ส่ง (หลังคำว่า ผู้ส่ง / From จนกว่าจะพบ ผู้รับ / To)
  */
 export function parseLabel(text: string): LabelFields {
-  const lines = text
+  // แปลงเลขไทย + แก้ตัวอักษรที่ OCR อ่านสลับกับตัวเลข ก่อนแยกทุกช่อง
+  const clean = normalizeOcrText(text);
+  const lines = clean
     .split(/\r?\n/)
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
@@ -46,7 +50,7 @@ export function parseLabel(text: string): LabelFields {
     if (mode !== "sender") recipientLines.push(line);
   }
 
-  const tracking = extractTracking(text) ?? "";
+  const tracking = extractTracking(clean) ?? "";
 
   let phone = "";
   for (const line of recipientLines) {
