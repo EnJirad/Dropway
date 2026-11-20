@@ -22,6 +22,16 @@ import {
 import { toast } from "react-hot-toast";
 import { House } from "@/types/house";
 import { extractTracking, type HouseMatch } from "@/lib/parcelMatch";
+import { composeAddress, parseLabel, type LabelFields } from "@/lib/labelParse";
+
+const DRAFT_FIELDS: { key: keyof LabelFields; label: string }[] = [
+  { key: "name", label: "ชื่อผู้รับ" },
+  { key: "phone", label: "เบอร์โทร" },
+  { key: "houseNo", label: "บ้านเลขที่" },
+  { key: "address", label: "ที่อยู่" },
+  { key: "postalCode", label: "รหัสไปรษณีย์" },
+  { key: "tracking", label: "เลขพัสดุ" },
+];
 
 const SCANNER_REGION_ID = "qr-scan-region";
 const UUID_PATTERN =
@@ -202,6 +212,8 @@ export default function ScanPage() {
   const [candidates, setCandidates] = useState<HouseMatch[]>([]);
   const [tracking, setTracking] = useState<string | null>(null);
   const [ocrBusy, setOcrBusy] = useState(false);
+  // ข้อมูลที่แยกจากฉลาก (แก้ไขได้ก่อนเพิ่มเข้านำทางวันนี้)
+  const [draft, setDraft] = useState<LabelFields | null>(null);
 
   const [manualCode, setManualCode] = useState("");
   const [adding, setAdding] = useState(false);
@@ -250,6 +262,7 @@ export default function ScanPage() {
       if (handlingRef.current) return;
       handlingRef.current = true;
       setOcrBusy(true);
+      setDraft(null);
       setResult(null);
       setNotFound(false);
       setAdded(false);
@@ -269,6 +282,7 @@ export default function ScanPage() {
           return;
         }
         setLastCode(text.replace(/\s+/g, " ").trim().slice(0, 200));
+        setDraft(parseLabel(text));
         const found = await applyIdentify(text);
         if (found) {
           toast.success("พบบ้านแล้ว");
@@ -373,6 +387,7 @@ export default function ScanPage() {
     setNotFound(false);
     setLastCode("");
     setAdded(false);
+    setDraft(null);
     setCandidates([]);
     setTracking(null);
 
@@ -444,6 +459,49 @@ export default function ScanPage() {
     },
     [adding, result, tracking],
   );
+
+  // เพิ่มพัสดุเข้านำทางวันนี้จากข้อมูลฉลากที่แก้แล้ว โดยไม่สร้างบ้านถาวร
+  const addDraftToNavigation = useCallback(async () => {
+    if (!draft || adding) return;
+    const address = composeAddress(draft);
+    if (!draft.name.trim() && !draft.phone.trim() && !address) {
+      toast.error("กรอกอย่างน้อยชื่อ เบอร์ หรือที่อยู่");
+      return;
+    }
+    setAdding(true);
+    try {
+      const post = (force: boolean) =>
+        fetch("/api/navigation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            destination: { name: draft.name, phone: draft.phone, address },
+            tracking_number: draft.tracking.trim() || null,
+            as_parcel: true,
+            force,
+          }),
+        });
+
+      let res = await post(false);
+      let json = await res.json().catch(() => ({}));
+      if (res.status === 409 && json.duplicate) {
+        const proceed = window.confirm(
+          `เลขพัสดุ ${draft.tracking} ถูกบันทึกวันนี้แล้ว\nต้องการเพิ่มซ้ำหรือไม่?`,
+        );
+        if (!proceed) return;
+        res = await post(true);
+        json = await res.json().catch(() => ({}));
+      }
+      if (!res.ok) throw new Error(json.error || "เพิ่มไม่สำเร็จ");
+      setAdded(true);
+      toast.success("เพิ่มเข้านำทางวันนี้แล้ว (ยังไม่ได้บันทึกเป็นบ้านถาวร)");
+    } catch (error) {
+      console.error(error);
+      toast.error("เพิ่มเข้านำทางไม่สำเร็จ");
+    } finally {
+      setAdding(false);
+    }
+  }, [adding, draft]);
 
   const hasCoords = result?.lat != null && result?.lng != null;
 
@@ -759,6 +817,35 @@ export default function ScanPage() {
               </p>
             </div>
           </div>
+          {draft && (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-bold text-gray-700">
+                ข้อมูลที่อ่านจากฉลาก (แก้ไขได้ ช่องว่างคืออ่านไม่ได้)
+              </p>
+              {DRAFT_FIELDS.map(({ key, label }) => (
+                <label key={key} className="block text-xs font-medium text-gray-600">
+                  {label}
+                  <input
+                    type="text"
+                    value={draft[key]}
+                    onChange={(event) =>
+                      setDraft((d) => (d ? { ...d, [key]: event.target.value } : d))
+                    }
+                    className="input mt-1 w-full"
+                  />
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={() => void addDraftToNavigation()}
+                disabled={adding || added}
+                className="btn btn-primary w-full"
+              >
+                <PlusCircle className="h-4 w-4" aria-hidden="true" />
+                {added ? "เพิ่มเข้านำทางวันนี้แล้ว" : adding ? "กำลังเพิ่ม..." : "เพิ่มเข้านำทางวันนี้"}
+              </button>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => void scanAgain()}

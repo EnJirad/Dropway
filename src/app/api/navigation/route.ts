@@ -41,7 +41,14 @@ export async function POST(request: NextRequest) {
     const sql = getDb();
     const body = await request.json();
 
-    const houseId = body.house_id;
+    const houseId: string | null = body.house_id || null;
+    // ปลายทางของวันนั้นโดยไม่ต้องมีบ้านถาวร (house_id ว่าง)
+    const cleanText = (v: unknown) =>
+      typeof v === "string" && v.trim() ? v.trim().slice(0, 500) : null;
+    const dest = body.destination && typeof body.destination === "object" ? body.destination : null;
+    const destName = cleanText(dest?.name);
+    const destPhone = cleanText(dest?.phone);
+    const destAddress = cleanText(dest?.address);
     const userId = body.user_id || "default-user";
     const navNote = body.nav_note || null;
     const navPriority = body.nav_priority ?? 0;
@@ -50,20 +57,25 @@ export async function POST(request: NextRequest) {
         ? body.tracking_number.trim().toUpperCase()
         : null;
 
-    if (!houseId) {
-      return NextResponse.json({ error: "house_id is required" }, { status: 400 });
+    if (!houseId && !(destName || destPhone || destAddress)) {
+      return NextResponse.json(
+        { error: "ต้องมี house_id หรือข้อมูลปลายทาง (ชื่อ/เบอร์/ที่อยู่)" },
+        { status: 400 }
+      );
     }
     const force = body.force === true;
     // as_parcel: หน้าสแกนเพิ่มพัสดุอีกชิ้น (แม้ไม่มีเลขพัสดุ); ที่อื่นเรียกซ้ำจะไม่เพิ่มพัสดุซ้ำ
     const asParcel = body.as_parcel === true || trackingNumber !== null;
 
     // จุดนำทางเดิมของบ้านนี้ (ที่ยังไม่ส่งแล้ว) → ใช้จุดเดิม ไม่สร้างจุดซ้ำ
-    const existingRows = await sql`
-      SELECT id FROM public.user_navigation_houses
-      WHERE house_id = ${houseId} AND user_id = ${userId} AND delivery_status <> 'delivered'
-      ORDER BY created_at DESC
-      LIMIT 1;
-    `;
+    const existingRows = houseId
+      ? await sql`
+          SELECT id FROM public.user_navigation_houses
+          WHERE house_id = ${houseId} AND user_id = ${userId} AND delivery_status <> 'delivered'
+          ORDER BY created_at DESC
+          LIMIT 1;
+        `
+      : [];
     const existingId: string | null = existingRows[0]?.id ? String(existingRows[0].id) : null;
 
     if (trackingNumber) {
@@ -94,9 +106,11 @@ export async function POST(request: NextRequest) {
     if (!navId) {
       const inserted = await sql`
         INSERT INTO public.user_navigation_houses (
-          user_id, house_id, nav_note, nav_priority, delivery_status
+          user_id, house_id, nav_note, nav_priority, delivery_status,
+          dest_name, dest_phone, dest_address
         ) VALUES (
-          ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending'
+          ${userId}, ${houseId}, ${navNote}, ${navPriority}, 'pending',
+          ${houseId ? null : destName}, ${houseId ? null : destPhone}, ${houseId ? null : destAddress}
         )
         RETURNING id;
       `;

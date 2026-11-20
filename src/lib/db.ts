@@ -83,6 +83,12 @@ export async function ensureDatabaseSchema(): Promise<void> {
     // 2.1 เลขพัสดุ (เพิ่มภายหลัง จึงใช้ ALTER เพื่อรองรับฐานข้อมูลเดิม)
     await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS tracking_number TEXT;`;
 
+    // 2.15 จุดนำทางที่ไม่มีบ้านถาวร: house_id เป็น NULL ได้ และเก็บปลายทางของวันนั้นไว้ที่ dest_*
+    await sql`ALTER TABLE public.user_navigation_houses ALTER COLUMN house_id DROP NOT NULL;`;
+    await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_name TEXT;`;
+    await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_phone TEXT;`;
+    await sql`ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_address TEXT;`;
+
     // 2.2 พัสดุรายชิ้น: จุดนำทางหนึ่งจุดมีได้หลายพัสดุ เลขพัสดุเก็บที่ระดับพัสดุ ไม่เก็บใน houses
     await sql`
       CREATE TABLE IF NOT EXISTS public.parcels (
@@ -120,15 +126,15 @@ export async function ensureDatabaseSchema(): Promise<void> {
         unh.driver_note,
         unh.call_count,
         unh.call_note,
-        h.full_name,
-        h.phone,
-        h.address,
+        COALESCE(h.full_name, unh.dest_name) AS full_name,
+        COALESCE(h.phone, unh.dest_phone) AS phone,
+        COALESCE(h.address, unh.dest_address) AS address,
         h.lat,
         h.lng,
         h.note,
-        h.quantity,
-        h.created_at,
-        h.updated_at,
+        COALESCE(h.quantity, 1) AS quantity,
+        COALESCE(h.created_at, unh.created_at) AS created_at,
+        COALESCE(h.updated_at, unh.updated_at) AS updated_at,
         COALESCE(
           (SELECT string_agg(p.tracking_number, ', ' ORDER BY p.created_at)
              FROM public.parcels p

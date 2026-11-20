@@ -43,6 +43,26 @@ CREATE TABLE IF NOT EXISTS public.user_navigation_houses (
 
 ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS tracking_number TEXT;
 
+-- จุดนำทางที่ไม่มีบ้านถาวร: house_id เป็น NULL ได้ และเก็บปลายทางของวันนั้นไว้ที่ dest_*
+ALTER TABLE public.user_navigation_houses ALTER COLUMN house_id DROP NOT NULL;
+ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_name TEXT;
+ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_phone TEXT;
+ALTER TABLE public.user_navigation_houses ADD COLUMN IF NOT EXISTS dest_address TEXT;
+
+-- พัสดุรายชิ้น: เลขพัสดุอยู่ที่ระดับพัสดุ ไม่อยู่ใน houses
+CREATE TABLE IF NOT EXISTS public.parcels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nav_id UUID NOT NULL REFERENCES public.user_navigation_houses(id) ON DELETE CASCADE,
+    tracking_number TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_parcels_nav_tracking ON public.parcels (nav_id, upper(tracking_number)) WHERE tracking_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_parcels_tracking ON public.parcels (upper(tracking_number));
+INSERT INTO public.parcels (nav_id, tracking_number, created_at)
+SELECT unh.id, unh.tracking_number, unh.created_at
+FROM public.user_navigation_houses unh
+WHERE NOT EXISTS (SELECT 1 FROM public.parcels p WHERE p.nav_id = unh.id);
+
 -- 3. สร้าง View navigation_view สำหรับเชื่อมข้อมูลระหว่างการนำทางและบ้าน
 CREATE OR REPLACE VIEW public.navigation_view AS
 SELECT
@@ -59,16 +79,30 @@ SELECT
     unh.driver_note,
     unh.call_count,
     unh.call_note,
-    h.full_name,
-    h.phone,
-    h.address,
+    COALESCE(h.full_name, unh.dest_name) AS full_name,
+    COALESCE(h.phone, unh.dest_phone) AS phone,
+    COALESCE(h.address, unh.dest_address) AS address,
     h.lat,
     h.lng,
     h.note,
-    h.quantity,
-    h.created_at,
-    h.updated_at,
-    unh.tracking_number
+    COALESCE(h.quantity, 1) AS quantity,
+    COALESCE(h.created_at, unh.created_at) AS created_at,
+    COALESCE(h.updated_at, unh.updated_at) AS updated_at,
+    COALESCE(
+      (SELECT string_agg(p.tracking_number, ', ' ORDER BY p.created_at)
+         FROM public.parcels p
+         WHERE p.nav_id = unh.id AND p.tracking_number IS NOT NULL),
+      unh.tracking_number
+    ) AS tracking_number,
+    GREATEST((SELECT count(*)::int FROM public.parcels p WHERE p.nav_id = unh.id), 1) AS parcel_count,
+    (SELECT COALESCE(
+              json_agg(json_build_object(
+                'id', p.id,
+                'tracking_number', p.tracking_number,
+                'created_at', p.created_at
+              ) ORDER BY p.created_at),
+              '[]'::json)
+       FROM public.parcels p WHERE p.nav_id = unh.id) AS parcels
 FROM public.user_navigation_houses unh
 LEFT JOIN public.houses h ON unh.house_id = h.id;
 
