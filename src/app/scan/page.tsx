@@ -859,7 +859,7 @@ export default function ScanPage() {
 
   /** บันทึกข้อมูล: มีบ้านอยู่แล้ว = แก้ไขบ้านหลังนั้น, ยังไม่มี = สร้างบ้านใหม่ */
   const savePrimary = useCallback(
-    async (form: LabelFields): Promise<boolean> => {
+    async (form: LabelFields, note: string): Promise<boolean> => {
       const address = composeAddress(form);
       if (!form.name.trim() && !form.phone.trim() && !address) {
         toast.error("กรอกอย่างน้อยชื่อ เบอร์ หรือที่อยู่");
@@ -882,7 +882,7 @@ export default function ScanPage() {
               ...payload,
               lat: result.lat,
               lng: result.lng,
-              note: result.note,
+              note: note.trim() || null,
               quantity: result.quantity,
             }),
           });
@@ -896,7 +896,7 @@ export default function ScanPage() {
         const res = await fetch("/api/houses", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...payload, note: null, quantity: 1 }),
+          body: JSON.stringify({ ...payload, note: note.trim() || null, quantity: 1 }),
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json.error || "บันทึกบ้านใหม่ไม่สำเร็จ");
