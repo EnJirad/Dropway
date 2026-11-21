@@ -7,6 +7,7 @@ import {
   Camera,
   CameraOff,
   Loader2,
+  RefreshCw,
   ScanText,
   Search,
   Zap,
@@ -225,8 +226,14 @@ function cameraErrorMessage(error: unknown): string {
   if (/permission|notallowed|denied|blocked/i.test(message)) {
     return "ไม่ได้รับอนุญาตให้ใช้กล้อง — เปิดสิทธิ์กล้องในเบราว์เซอร์แล้วลองอีกครั้ง หรือใช้ช่องกรอกรหัสด้านล่าง";
   }
-  if (/notfound|no camera|devicesnotfound|overconstrained/i.test(message)) {
+  if (/notfound|no camera|devicesnotfound/i.test(message)) {
     return "ไม่พบกล้องบนอุปกรณ์นี้ — ใช้ช่องกรอกรหัสด้านล่างแทนได้";
+  }
+  if (/notreadable|track start|in use|busy|device in use/i.test(message)) {
+    return "กล้องถูกแอปอื่นใช้งานอยู่ — ปิดแอปที่ใช้กล้อง (เช่น กล้องถ่ายรูป) แล้วกดลองอีกครั้ง";
+  }
+  if (/overconstrained|constraint/i.test(message)) {
+    return "กล้องไม่รองรับค่าที่ระบบขอ — กดลองอีกครั้ง หรือใช้ช่องกรอกรหัสด้านล่าง";
   }
   if (/secure|https|not supported/i.test(message)) {
     return "กล้องต้องใช้งานผ่าน HTTPS — เปิดเว็บด้วยที่อยู่ https:// แล้วลองอีกครั้ง";
@@ -640,46 +647,60 @@ export default function ScanPage() {
     startingRef.current = true;
     setStarting(true);
     setCameraError(null);
+
     try {
       const { Html5Qrcode } = await import("html5-qrcode");
-      const scanner = new Html5Qrcode(SCANNER_REGION_ID, { verbose: false });
-      scannerRef.current = scanner;
+      const scanConfig = {
+        fps: 10,
+        qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+          const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
+          return { width: edge, height: edge };
+        },
+      };
 
-      await scanner.start(
-        {
-          facingMode: "environment",
-          // ขอความละเอียดสูงจากกล้อง — ภาพชัดขึ้นโดยไม่ต้องซูมดิจิทัล
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        } as MediaTrackConstraints,
-        {
-          fps: 10,
-          aspectRatio: 1,
-          qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-            const edge = Math.floor(
-              Math.min(viewfinderWidth, viewfinderHeight) * 0.72,
-            );
-            return { width: edge, height: edge };
-          },
-        },
-        () => {
-          // ปิดการอ่าน QR: หน้านี้ใช้ตรวจจับใบปะหน้าและถ่ายรูปเองเท่านั้น
-        },
-        () => {
-          // ไม่ต้องแจ้ง error ทุกเฟรม
-        },
-      );
-      setScanning(true);
-      // ปลุก AudioContext จากการแตะของผู้ใช้ เพื่อให้บี๊บแรกดังเต็มเสียง
-      unlockBeep();
-      // ให้วิดีโอเริ่มเล่นก่อน แล้วขอโฟกัส/แสงต่อเนื่อง (ภาพคมขึ้นมากในที่แสงน้อย)
-      window.setTimeout(() => {
-        const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
-        const stream = video?.srcObject as MediaStream | null;
-        void tuneCameraTrack(stream?.getVideoTracks?.()[0] ?? null);
-      }, 700);
-      // ให้วิดีโอเริ่มเล่นก่อนแล้วค่อยตรวจว่าเครื่องนี้มีแฟลชไหม
-      window.setTimeout(detectTorch, 600);
+      // ลองจากค่าที่ง่ายที่สุดก่อน — บางเครื่อง/บางเบราว์เซอร์ปฏิเสธเมื่อขอความละเอียดหรือ aspect ที่ไม่ตรง
+      const attempts: MediaTrackConstraints[] = [
+        { facingMode: "environment" },
+        { facingMode: { ideal: "environment" } },
+        { facingMode: "user" },
+      ];
+
+      let lastError: unknown = null;
+      for (const constraints of attempts) {
+        const scanner = new Html5Qrcode(SCANNER_REGION_ID, { verbose: false });
+        try {
+          await scanner.start(constraints, scanConfig, () => {}, () => {});
+          scannerRef.current = scanner;
+          setScanning(true);
+          // ปลุก AudioContext จากการแตะของผู้ใช้ เพื่อให้บี๊บแรกดังเต็มเสียง
+          unlockBeep();
+          // ขอความละเอียด/โฟกัสหลังวิดีโอเล่นแล้ว (ถ้าเครื่องไม่รับก็ข้ามไป ไม่ทำให้เปิดกล้องล้ม)
+          window.setTimeout(() => {
+            const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
+            const stream = video?.srcObject as MediaStream | null;
+            void tuneCameraTrack(stream?.getVideoTracks?.()[0] ?? null);
+          }, 700);
+          window.setTimeout(detectTorch, 600);
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          try {
+            scanner.clear();
+          } catch {
+            // instance ถูกทิ้งไปแล้ว
+          }
+          scannerRef.current = null;
+          const message = error instanceof Error ? error.message : String(error ?? "");
+          // สิทธิ์ถูกปฏิเสธ = ลองแบบอื่นก็ไม่ผ่าน หยุดแล้วบอกวิธีแก้
+          if (/permission|notallowed|denied|blocked/i.test(message)) break;
+        }
+      }
+
+      if (lastError) {
+        setCameraError(cameraErrorMessage(lastError));
+        setScanning(false);
+      }
     } catch (error) {
       console.error(error);
       setCameraError(cameraErrorMessage(error));
@@ -1116,10 +1137,21 @@ export default function ScanPage() {
           {cameraError && (
             <div
               role="alert"
-              className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+              className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
             >
-              <AlertCircle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
-              <span>{cameraError}</span>
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+                <span>{cameraError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void startScanner()}
+                disabled={starting || scanning}
+                className="btn btn-secondary mt-2 w-full text-xs disabled:opacity-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                {starting ? "กำลังลองใหม่…" : "ลองเปิดกล้องอีกครั้ง"}
+              </button>
             </div>
           )}
 
