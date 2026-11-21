@@ -1,6 +1,7 @@
 // C:\DropWay\New_Version\dropway-final\src\app\houses\page.tsx
 "use client";
 import { House } from "@/types/house";
+import { matchHouses, type HouseMatch } from "@/lib/parcelMatch";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Home,
@@ -618,11 +619,42 @@ export default function HousesPage() {
         h.address?.toLowerCase().includes(provinceFilter.toLowerCase()),
       );
 
-    // (3) ค้นหาข้อความ (partial match) เฉพาะฟิลด์ที่ผู้ใช้เปิด
-    filtered = filtered.filter((h) => matchesSearch(h, searchTerm, searchOptions));
+    // (3) ค้นหาข้อความ: ใช้ตัวเทียบตัวเดียวกับหน้าสแกน (parcelMatch)
+    //     เพื่อให้ค้นชื่อที่พิมพ์ผิด/เว้นวรรคต่าง/มีคำนำหน้า ได้แม่นเหมือนตอนสแกนฉลาก
+    const term = searchTerm.trim();
+    const scoredMatches: HouseMatch[] = term.length >= 2 ? matchHouses(filtered, term) : [];
+    const allowedByToggles = (m: HouseMatch): boolean => {
+      if (m.matched.name && searchInName) return true;
+      if (m.matched.houseNo && searchInAddress) return true;
+      if (m.matched.phone && searchInPhone) return true;
+      // จับได้จากข้อความอื่น (เช่น ที่อยู่โดยรวม) — เคารพ toggle ที่อยู่
+      return !m.matched.name && !m.matched.houseNo && !m.matched.phone && searchInAddress;
+    };
+    const scoredById = new Map<string, HouseMatch>();
+    for (const match of scoredMatches) {
+      if (allowedByToggles(match)) scoredById.set(match.house.id, match);
+    }
 
-    // (4) จัดอันดับเฉพาะรายการที่ผ่านตัวกรองทั้งหมดแล้ว
-    setFilteredHouses(sortByRelevance(filtered, searchTerm, searchOptions));
+    const searched = filtered.filter(
+      (h) => matchesSearch(h, term, searchOptions) || scoredById.has(h.id),
+    );
+
+    // (4) จัดอันดับ: ผลที่ parcelMatch ให้คะแนนไว้ขึ้นก่อน ตามด้วยการจัดอันดับเดิม
+    const baseSorted = sortByRelevance(searched, term, searchOptions);
+    const ranked =
+      scoredById.size > 0
+        ? baseSorted
+            .map((house, index) => ({ house, index }))
+            .sort((a, b) => {
+              const sa = scoredById.get(a.house.id)?.score ?? -1;
+              const sb = scoredById.get(b.house.id)?.score ?? -1;
+              if (sb !== sa) return sb - sa;
+              return a.index - b.index;
+            })
+            .map((entry) => entry.house)
+        : baseSorted;
+
+    setFilteredHouses(ranked);
     setCurrentPage(1);
   }, [
     searchTerm,
