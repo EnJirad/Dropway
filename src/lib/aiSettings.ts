@@ -63,6 +63,42 @@ export const DEFAULT_FALLBACK_MODELS: Record<AiProvider, string> = {
   anthropic: "",
 };
 
+export type ModelPreset = {
+  id: string;
+  label: string;
+  note: string;
+};
+
+/**
+ * รายการโมเดลตัวอย่างที่เลือกได้ทันที (ไม่ต้องจำชื่อ ไม่ต้องมี key)
+ * ชื่อโมเดลจริงเปลี่ยนได้เรื่อย ๆ — พิมพ์เองได้ถ้าไม่อยู่ในรายการนี้
+ */
+export const MODEL_PRESETS: Record<AiProvider, ModelPreset[]> = {
+  gemini: [
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "เร็ว/ประหยัด เหมาะสแกนใบปะหน้า" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "สมดุล (ค่าเริ่มต้น)" },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", note: "แม่นสุด แต่ช้ากว่า" },
+    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", note: "รุ่นเก่า เสถียร" },
+  ],
+  openai: [
+    { id: "gpt-4o-mini", label: "GPT-4o mini", note: "เร็ว/ประหยัด" },
+    { id: "gpt-4o", label: "GPT-4o", note: "แม่นขึ้น ช้ากว่า" },
+    { id: "gpt-4.1-mini", label: "GPT-4.1 mini", note: "รุ่นใหม่ ราคากลาง" },
+    { id: "gpt-4.1", label: "GPT-4.1", note: "แม่นสุด" },
+  ],
+  anthropic: [
+    { id: "claude-3-5-haiku-latest", label: "Claude 3.5 Haiku", note: "เร็ว/ประหยัด" },
+    { id: "claude-3-5-sonnet-latest", label: "Claude 3.5 Sonnet", note: "สมดุล" },
+    { id: "claude-3-7-sonnet-latest", label: "Claude 3.7 Sonnet", note: "แม่นขึ้น" },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", note: "แม่นสุด ช้ากว่า" },
+  ],
+};
+
+/** true เมื่อชื่อโมเดลตรงกับตัวอย่างที่รู้จัก (ใช้ไฮไลต์ปุ่ม) */
+export function isPresetModel(provider: AiProvider, model: string): boolean {
+  return MODEL_PRESETS[provider].some((p) => p.id === model);
+}
+
 export const AI_ATTEMPT_OPTIONS = [1, 2, 3, 4] as const;
 export const AI_TIMEOUT_OPTIONS = [10, 15, 20, 30] as const;
 
