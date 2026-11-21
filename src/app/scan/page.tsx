@@ -40,14 +40,14 @@ import {
 } from "@/lib/scanMerge";
 
 const SCANNER_REGION_ID = "qr-scan-region";
-/** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง */
-const AUTO_HOLD_MS = 1200;
+/** ต้องเห็นใบปะหน้านิ่งต่อเนื่องกี่ ms ก่อนถ่ายเอง (ลดลงเพื่อความไว — ยังมีเกณฑ์ความคมชัดกันภาพเบลอ) */
+const AUTO_HOLD_MS = 900;
 /** ตรวจจับนิ่งต่อเนื่องกี่ ms พร้อมกับ hold */
-const AUTO_STILL_MS = 600;
+const AUTO_STILL_MS = 500;
 /** ตรวจเฟรมทุกกี่ ms */
-const AUTO_TICK_MS = 300;
+const AUTO_TICK_MS = 250;
 /** หลังเพิ่มสำเร็จ เว้นช่วงก่อนสแกนชิ้นถัดไป กันสแกนซ้ำใบเดิม */
-const AUTO_COOLDOWN_MS = 2600;
+const AUTO_COOLDOWN_MS = 1800;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UUID_IN_TEXT =
@@ -270,6 +270,8 @@ export default function ScanPage() {
   const [torchOn, setTorchOn] = useState(false);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const cooldownRef = useRef(0);
+  /** เวลาที่ใช้ในรอบสแกนล่าสุด (ms) — ใช้ยืนยันความไวจริง */
+  const [lastMs, setLastMs] = useState<number | null>(null);
 
   useModalKeyboardBehavior();
 
@@ -296,6 +298,8 @@ export default function ScanPage() {
   useEffect(() => {
     const settings = loadSettings();
     if (settings.scanMode === "ocr" || settings.fallbackToOcr) warmupOcr();
+    // อุ่นการเชื่อมต่อฐานข้อมูล + คีย์เข้ารหัสล่วงหน้า ลดเวลารอบแรก
+    void fetch("/api/settings/ai", { cache: "no-store" }).catch(() => undefined);
     return () => {
       void disposeOcr();
     };
@@ -321,9 +325,10 @@ export default function ScanPage() {
 
   // ถ่ายรูปฉลากพัสดุ → AI และ OCR อ่านพร้อมกัน → เทียบกับคลังบ้าน
   const scanPhoto = useCallback(
-    async (file: File, options: { auto?: boolean } = {}) => {
+    async (file: File, options: { auto?: boolean; fast?: boolean } = {}) => {
       if (handlingRef.current) return;
       handlingRef.current = true;
+      const startedAt = Date.now();
       setLoading(true);
       setLoadingTitle("กำลังอ่านฉลาก");
       setStage("กำลังเตรียมรูป…");
@@ -358,7 +363,9 @@ export default function ScanPage() {
 
         // เริ่ม OCR ไว้ก่อน (ทำงานคู่ขนานกับ AI) แต่ถ้า AI อ่านได้ครบก็ไม่ต้องรอ OCR
         const ocrPromise = runOcr ? recognizeLabel(file) : null;
-        const aiResult = useAi ? await readLabelWithAi(file, settings) : null;
+        const aiResult = useAi
+          ? await readLabelWithAi(file, settings, { fast: options.fast === true })
+          : null;
         const aiOk = Boolean(aiResult && aiResult.ok && hasAnyField(aiResult.fields));
 
         let ocrAttempt: Awaited<ReturnType<typeof recognizeLabel>> | null = null;
@@ -422,10 +429,11 @@ export default function ScanPage() {
         setSheetOpen(true);
         toast.error("อ่านฉลากไม่สำเร็จ");
       } finally {
-        setLoading(false);
-        setStage(null);
-        handlingRef.current = false;
-      }
+      setLoading(false);
+      setStage(null);
+      setLastMs(Date.now() - startedAt);
+      handlingRef.current = false;
+    }
     },
     [applyIdentify],
   );
@@ -456,7 +464,26 @@ export default function ScanPage() {
     });
   }, []);
 
-  // ตรวจเฟรมจากกล้องตลอดเวลา: เห็นใบปะหน้า + นิ่งสั้น ๆ ~0.7 วิ → ถ่ายและอ่านเอง
+  /** ปุ่มถ่ายมือ: ดึงภาพทันทีโดยไม่รอภาพนิ่ง แล้วใช้โหมดเร็ว (ลองครั้งเดียว ไม่มีรอบสอง) */
+  const shutter = useCallback(async () => {
+    if (!scanning || loading || handlingRef.current) return;
+    if (Date.now() < cooldownRef.current) return;
+    cooldownRef.current = Date.now() + 2000;
+    setAutoStatus("capturing");
+    try {
+      const file = await captureFrame();
+      if (!file) {
+        setAutoStatus("searching");
+        toast.error("ยังไม่ได้ภาพจากกล้อง ลองอีกครั้ง");
+        return;
+      }
+      beepCapture();
+      await scanPhoto(file, { fast: true });
+    } catch {
+      setAutoStatus("searching");
+      toast.error("ถ่ายภาพไม่สำเร็จ");
+    }
+  }, [scanning, loading, captureFrame, scanPhoto]);
   useEffect(() => {
     if (!scanning || loading || sheetOpen) {
       setAutoStatus("idle");
@@ -967,6 +994,17 @@ export default function ScanPage() {
               />
             </div>
           )}
+
+          {scanning && !loading && (
+            <button
+              type="button"
+              onClick={() => void shutter()}
+              aria-label="ถ่ายภาพทันที"
+              className="absolute bottom-3 left-1/2 z-10 flex h-16 w-16 -translate-x-1/2 items-center justify-center rounded-full border-4 border-white/80 bg-white/20 backdrop-blur transition active:scale-95"
+            >
+              <span className="h-11 w-11 rounded-full bg-white" aria-hidden="true" />
+            </button>
+          )}
         </div>
 
         <div className="p-4">
@@ -1046,6 +1084,11 @@ export default function ScanPage() {
                     ? "จ่อใกล้เกินไป — ถอยกล้องออกให้เห็นขอบใบปะหน้า"
                     : "จ่อใบปะหน้าให้อยู่กลางกรอบ ระบบจะถ่ายและอ่านให้เอง"}
           </div>
+          {lastMs !== null && (
+            <p className="mt-1 text-[11px] text-gray-500">
+              รอบล่าสุดใช้เวลา {(lastMs / 1000).toFixed(1)} วินาที (ตั้งแต่ถ่ายภาพจนได้ผล)
+            </p>
+          )}
 
           {cameraError && (
             <div
