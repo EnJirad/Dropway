@@ -256,7 +256,12 @@ export async function POST(request: NextRequest) {
       provider === "gemini" ? callGemini : provider === "openai" ? callOpenAI : callAnthropic;
     const fallbackRaw = typeof body.fallbackModel === "string" ? body.fallbackModel.trim() : "";
     const fallbackModel = MODEL_RE.test(fallbackRaw) ? fallbackRaw : "";
-    const config = resolveRetryConfig({ maxAttempts: body.maxAttempts, timeoutMs: body.timeoutMs });
+    // โหมดเร็ว (ผู้ใช้กดถ่ายเอง): ลองครั้งเดียว และไม่ยิงรอบอ่านซ้ำ — แลกความครบถ้วนกับความไว
+    const fast = body.fast === true;
+    const config = resolveRetryConfig({
+      maxAttempts: fast ? 1 : body.maxAttempts,
+      timeoutMs: fast ? 10_000 : body.timeoutMs,
+    });
 
     // ลำดับ key: หลักก่อน แล้วค่อยสำรอง — สลับเมื่อ key หลักติดโควตาหรือสิทธิ์
     const keys = buildKeySlots(resolvedKey, resolvedBackup);
@@ -315,7 +320,7 @@ export async function POST(request: NextRequest) {
     // รอบสอง: อ่านซ้ำเฉพาะช่องสำคัญที่ยังขาด/ผิดรูป (จำกัดเวลาและครั้ง)
     // ไม่ยิงเพิ่มเพียงเพราะไม่มีเลขพัสดุ — ใบหลายใบไม่มีเลขนี้พิมพ์อยู่ และการยิงซ้ำมีต้นทุน
     const gaps = criticalGaps(fields);
-    const worthRetry = gaps.some((k) => k !== "tracking");
+    const worthRetry = !fast && gaps.some((k) => k !== "tracking");
     if (worthRetry) {
       try {
         const focus = await runWithResilience({
