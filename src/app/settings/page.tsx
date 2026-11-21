@@ -22,9 +22,11 @@ import { toast } from "react-hot-toast";
 import {
   DEFAULT_MODELS,
   IMAGE_SIDES,
+  MODEL_PRESETS,
   PROVIDERS,
   defaultSettings,
   detectProvider,
+  isPresetModel,
   loadSettings,
   maskKey,
   providerName,
@@ -148,6 +150,7 @@ export default function SettingsPage() {
   const key = settings.apiKeys[settings.provider];
   const backupKey = settings.backupApiKeys[settings.provider] ?? "";
   const model = settings.models[settings.provider];
+  const fallbackModel = settings.fallbackModels[settings.provider] ?? "";
   const detected = detectProvider(key);
   const backupDetected = detectProvider(backupKey);
 
@@ -734,6 +737,72 @@ export default function SettingsPage() {
             )}
           </div>
         </div>
+
+        {/* เลือกโมเดลตัวอย่าง — ไม่ต้องจำชื่อ ไม่ต้องมี key */}
+        <div className="mt-4">
+          <p className="text-xs font-medium text-gray-600">เลือกจากรายการ</p>
+          <p className="mt-0.5 text-[11px] text-gray-500">
+            กดเลือกได้เลย — รายการนี้ใช้ได้แม้ยังไม่ได้ใส่ key
+          </p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {MODEL_PRESETS[settings.provider].map((preset) => {
+              const active = model.trim() === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setModelFor(settings.provider, preset.id)}
+                  className={`rounded-xl border p-2 text-left transition-colors ${
+                    active
+                      ? "border-teal-600 bg-teal-50"
+                      : "border-gray-200 hover:bg-gray-50"
+                  }`}
+                >
+                  <span className="block text-xs font-semibold text-gray-900">
+                    {preset.label}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] text-gray-500">{preset.note}</span>
+                  <span className="mt-1 block truncate font-mono text-[10px] text-gray-400">
+                    {preset.id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {model.trim() && !isPresetModel(settings.provider, model.trim()) && (
+            <p className="mt-1 truncate font-mono text-[11px] text-gray-500">
+              ใช้โมเดลที่พิมพ์เอง: {model.trim()}
+            </p>
+          )}
+        </div>
+
+        {/* โมเดลสำรอง */}
+        <label className="mt-4 block text-xs font-medium text-gray-600">
+          โมเดลสำรอง (ใช้เมื่อโมเดลหลักไม่พร้อม)
+          <select
+            value={fallbackModel}
+            onChange={(event) =>
+              patch({
+                fallbackModels: {
+                  ...settings.fallbackModels,
+                  [settings.provider]: event.target.value,
+                },
+              })
+            }
+            className="input mt-1 w-full"
+          >
+            <option value="">ไม่ใช้โมเดลสำรอง</option>
+            {MODEL_PRESETS[settings.provider].map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label} — {preset.note}
+              </option>
+            ))}
+            {fallbackModel && !isPresetModel(settings.provider, fallbackModel) && (
+              <option value={fallbackModel}>{fallbackModel} (กำหนดเอง)</option>
+            )}
+          </select>
+        </label>
 
         {/* ขนาดรูป */}
         <label className="mt-4 block text-xs font-medium text-gray-600">
