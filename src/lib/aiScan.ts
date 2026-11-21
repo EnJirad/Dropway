@@ -75,20 +75,33 @@ export async function hasServerAiKey(): Promise<boolean> {
   }
 }
 
+export type ReadLabelOptions = {
+  /** โหมดเร็ว: ใช้เมื่อผู้ใช้กดถ่ายเอง — ลดขนาดรูปและให้เซิร์ฟเวอร์ข้ามรอบอ่านซ้ำ */
+  fast?: boolean;
+};
+
 /**
  * ส่งรูปฉลากให้ AI ตามค่าตั้งค่า ฟังก์ชันนี้ไม่ throw: ถ้า AI ใช้ไม่ได้จะคืน { ok: false }
  * เพื่อให้หน้าสแกนเก็บผล OCR ไว้และให้ผู้ใช้แก้ข้อมูลต่อได้
  */
-export async function readLabelWithAi(file: File, settings: AppSettings): Promise<AiScanResult> {
+export async function readLabelWithAi(
+  file: File,
+  settings: AppSettings,
+  options: ReadLabelOptions = {},
+): Promise<AiScanResult> {
+  const fast = options.fast === true;
+  // โหมดเร็ว: 1440px พอสำหรับใบปะหน้า และอัปโหลด/ประมวลผลเร็วกว่า 1600 อย่างชัดเจน
+  const maxSide = fast ? Math.min(settings.imageMaxSide, 1440) : settings.imageMaxSide;
   let image: string;
   try {
-    image = await imageToBase64(file, settings.imageMaxSide);
+    image = await imageToBase64(file, maxSide);
   } catch {
     return { ok: false, code: "AI_IMAGE", message: "เตรียมรูปส่งให้ AI ไม่ได้" };
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
+  const timeoutMs = fast ? 15_000 : CLIENT_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch("/api/ai/label", {
       method: "POST",
@@ -104,8 +117,9 @@ export async function readLabelWithAi(file: File, settings: AppSettings): Promis
         provider: settings.provider,
         model: settings.models[settings.provider],
         fallbackModel: settings.fallbackModels[settings.provider],
-        maxAttempts: settings.aiMaxAttempts,
-        timeoutMs: settings.aiTimeoutSec * 1000,
+        maxAttempts: fast ? 1 : settings.aiMaxAttempts,
+        timeoutMs: fast ? Math.min(settings.aiTimeoutSec * 1000, 10_000) : settings.aiTimeoutSec * 1000,
+        fast,
         image,
         mimeType: "image/jpeg",
       }),
