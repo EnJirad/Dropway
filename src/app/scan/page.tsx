@@ -27,6 +27,7 @@ import {
   looksTooClose,
 } from "@/lib/labelDetect";
 import { beepCapture, unlockBeep } from "@/lib/beep";
+import { sharpenCanvas, tuneCameraTrack } from "@/lib/imageEnhance";
 import { useModalKeyboardBehavior } from "@/lib/viewport";
 import BlockingLoader from "@/components/BlockingLoader";
 import ScanResultSheet, { type ScanPrimary } from "@/components/ScanResultSheet";
@@ -323,6 +324,23 @@ export default function ScanPage() {
     return Boolean(found.house);
   }, []);
 
+  /** ค้นหาบ้านจากข้อความอิสระ — ใช้ในช่องค้นหาของชีตผลสแกน */
+  const searchHouses = useCallback(async (query: string): Promise<HouseMatch[]> => {
+    const text = query.trim();
+    if (!text) return [];
+    try {
+      const res = await fetch("/api/houses/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const json = await res.json();
+      return Array.isArray(json.candidates) ? (json.candidates as HouseMatch[]) : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
   // ถ่ายรูปฉลากพัสดุ → AI และ OCR อ่านพร้อมกัน → เทียบกับคลังบ้าน
   const scanPhoto = useCallback(
     async (file: File, options: { auto?: boolean; fast?: boolean } = {}) => {
@@ -442,13 +460,15 @@ export default function ScanPage() {
   const captureFrame = useCallback(async (): Promise<File | null> => {
     const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
     if (!video || !video.videoWidth || !video.videoHeight) return null;
-    const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
+    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    // เพิ่มความคมชัดเล็กน้อยก่อนแปลงเป็น JPEG (ช่วยให้ตัวอักษรบนใบปะหน้าอ่านง่าย)
+    sharpenCanvas(canvas);
     return new Promise((resolve) => {
       canvas.toBlob(
         (blob) => {
@@ -626,7 +646,12 @@ export default function ScanPage() {
       scannerRef.current = scanner;
 
       await scanner.start(
-        { facingMode: "environment" },
+        {
+          facingMode: "environment",
+          // ขอความละเอียดสูงจากกล้อง — ภาพชัดขึ้นโดยไม่ต้องซูมดิจิทัล
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        } as MediaTrackConstraints,
         {
           fps: 10,
           aspectRatio: 1,
@@ -647,6 +672,12 @@ export default function ScanPage() {
       setScanning(true);
       // ปลุก AudioContext จากการแตะของผู้ใช้ เพื่อให้บี๊บแรกดังเต็มเสียง
       unlockBeep();
+      // ให้วิดีโอเริ่มเล่นก่อน แล้วขอโฟกัส/แสงต่อเนื่อง (ภาพคมขึ้นมากในที่แสงน้อย)
+      window.setTimeout(() => {
+        const video = document.querySelector<HTMLVideoElement>(`#${SCANNER_REGION_ID} video`);
+        const stream = video?.srcObject as MediaStream | null;
+        void tuneCameraTrack(stream?.getVideoTracks?.()[0] ?? null);
+      }, 700);
       // ให้วิดีโอเริ่มเล่นก่อนแล้วค่อยตรวจว่าเครื่องนี้มีแฟลชไหม
       window.setTimeout(detectTorch, 600);
     } catch (error) {
@@ -662,7 +693,8 @@ export default function ScanPage() {
 
   const scanAgain = useCallback(async () => {
     setSheetOpen(false);
-    cooldownRef.current = Date.now() + AUTO_COOLDOWN_MS;
+    // ไม่หยุด/เปิดกล้องใหม่ (จะกระพริบและช้า) — แค่ล้างผลแล้วจับใบถัดไปทันที
+    cooldownRef.current = 0;
     setResult(null);
     setPrimaryMatch(null);
     setLastCode("");
@@ -672,19 +704,10 @@ export default function ScanPage() {
     setCandidates([]);
     setTracking(null);
     setSameParcel(null);
+    setAutoStatus("searching");
 
-    const scanner = scannerRef.current;
-    if (scanner) {
-      try {
-        scanner.resume();
-        return;
-      } catch {
-        // ถ้า resume ไม่ได้ ให้เริ่มใหม่ด้านล่าง
-      }
-    }
-    await stopScanner();
-    await startScanner();
-  }, [startScanner, stopScanner]);
+    if (!scannerRef.current) await startScanner();
+  }, [startScanner]);
 
   /** เพิ่มบ้านที่มีอยู่แล้วเข้าคิวนำทางวันนี้ */
   const addHouseToNavigation = useCallback(
@@ -1161,6 +1184,7 @@ export default function ScanPage() {
         onAdd={addPrimary}
         onSave={savePrimary}
         onSelectCandidate={selectCandidate}
+        onSearch={searchHouses}
         onScanAgain={() => void scanAgain()}
       />
     </div>

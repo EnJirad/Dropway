@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Save,
   ScanLine,
+  Search,
   Sparkles,
   X,
 } from "lucide-react";
@@ -58,6 +59,8 @@ type Props = {
   onAdd: (form: LabelFields) => Promise<boolean>;
   onSave: (form: LabelFields) => Promise<boolean>;
   onSelectCandidate: (match: HouseMatch) => void;
+  /** ค้นหาบ้านจากข้อความอิสระ (ใช้ช่องค้นหาในชีต) */
+  onSearch: (query: string) => Promise<HouseMatch[]>;
   onScanAgain: () => void;
 };
 
@@ -110,11 +113,15 @@ export default function ScanResultSheet({
   onAdd,
   onSave,
   onSelectCandidate,
+  onSearch,
   onScanAgain,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<LabelFields>(emptyFields());
   const [saving, setSaving] = useState(false);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<HouseMatch[] | null>(null);
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
   const house = primary?.house ?? null;
@@ -133,6 +140,42 @@ export default function ScanResultSheet({
     const timer = window.setTimeout(() => sheetRef.current?.focus(), 40);
     return () => window.clearTimeout(timer);
   }, [open]);
+
+  // ปิดชีตแล้วล้างคำค้นหา ไม่ให้ค้างมาทับผลสแกนครั้งถัดไป
+  useEffect(() => {
+    if (open) return;
+    setQuery("");
+    setSearchResults(null);
+    setSearching(false);
+  }, [open]);
+
+  // ค้นหาบ้านจากคำที่พิมพ์ (debounce 350ms — ลดจำนวน request)
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void onSearch(q)
+        .then((found) => {
+          if (!cancelled) setSearchResults(found);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, onSearch]);
 
   useEffect(() => {
     if (!open) return;
@@ -367,6 +410,61 @@ export default function ScanResultSheet({
                 เพิ่มเข้าคิวนำทางวันนี้แล้ว
               </p>
             ) : null}
+          </section>
+
+          {/* ค้นหาบ้านเอง — ใช้เมื่อผลสแกนไม่ตรงกับที่ต้องการ */}
+          <section className="mt-5" aria-label="ค้นหาบ้านในคลัง">
+            <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-500">
+              <Search className="h-3.5 w-3.5" aria-hidden="true" />
+              ค้นหาบ้านเอง
+            </h3>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="ชื่อ / เบอร์ / ที่อยู่ / เลขพัสดุ"
+                aria-label="ค้นหาบ้านในคลัง"
+                className="input min-w-0 flex-1 text-sm"
+              />
+              {searching && (
+                <Loader2 className="h-4 w-4 flex-none animate-spin text-gray-400" aria-hidden="true" />
+              )}
+            </div>
+            {searchResults && searchResults.length === 0 && !searching && (
+              <p className="mt-2 rounded-xl border border-dashed border-gray-200 p-3 text-xs text-gray-500">
+                ไม่พบบ้านที่ตรงกับ “{query.trim()}”
+              </p>
+            )}
+            {searchResults && searchResults.length > 0 && (
+              <ul className="mt-2 space-y-2">
+                {searchResults.slice(0, 8).map((candidate) => (
+                  <li key={candidate.house.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectCandidate(candidate);
+                        setQuery("");
+                        setSearchResults(null);
+                      }}
+                      disabled={busy || saving}
+                      className="scan-candidate"
+                    >
+                      <span className="min-w-0 flex-1 text-left">
+                        <span className="block truncate text-sm font-semibold text-gray-900">
+                          {candidate.house.full_name || "ไม่ทราบชื่อ"}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-gray-500">
+                          {candidate.house.phone ? `${candidate.house.phone} • ` : ""}
+                          {candidate.house.address || "ไม่มีที่อยู่"}
+                        </span>
+                      </span>
+                      <span className="badge badge-slate">{LEVEL_LABEL[candidate.level]}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {/* รายการแนะนำ: อยู่ล่างผลหลักเสมอ */}
