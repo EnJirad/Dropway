@@ -16,6 +16,7 @@ import {
   ScanLine,
   Search,
   Sparkles,
+  StickyNote,
   X,
 } from "lucide-react";
 import type { House } from "@/types/house";
@@ -57,7 +58,7 @@ type Props = {
   added: boolean;
   onClose: () => void;
   onAdd: (form: LabelFields) => Promise<boolean>;
-  onSave: (form: LabelFields) => Promise<boolean>;
+  onSave: (form: LabelFields, note: string) => Promise<boolean>;
   onSelectCandidate: (match: HouseMatch) => void;
   /** ค้นหาบ้านจากข้อความอิสระ (ใช้ช่องค้นหาในชีต) */
   onSearch: (query: string) => Promise<HouseMatch[]>;
@@ -119,6 +120,7 @@ export default function ScanResultSheet({
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<LabelFields>(emptyFields());
   const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<HouseMatch[] | null>(null);
@@ -132,6 +134,7 @@ export default function ScanResultSheet({
     if (!open) return;
     setEditing(false);
     setForm(house ? fieldsFromHouse(house, tracking) : fieldsFromDraft(draft, tracking));
+    setNote(house?.note ?? "");
   }, [open, house, draft, tracking]);
 
   // โฟกัสในชีตเพื่อให้ Escape/คีย์บอร์ดทำงานกับ dialog ไม่ใช่หน้าเบื้องหลัง
@@ -205,7 +208,7 @@ export default function ScanResultSheet({
     if (!canSave) return;
     setSaving(true);
     try {
-      const ok = await onSave(form);
+      const ok = await onSave(form, note);
       if (ok) setEditing(false);
     } finally {
       setSaving(false);
@@ -323,10 +326,19 @@ export default function ScanResultSheet({
                     />
                   </label>
                 ))}
+                <label className="block text-xs font-medium text-gray-600">
+                  หมายเหตุ
+                  <textarea
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    rows={2}
+                    placeholder="เช่น บ้านหลังที่ 2 ทางซ้าย / โทรก่อนถึง"
+                    className="input mt-1 w-full"
+                  />
+                </label>
                 <p className="text-[11px] text-gray-500">
                   แก้ไขแล้วกด “บันทึก” เพื่อบันทึกทับข้อมูล{house ? "บ้านหลังนี้" : "เป็นบ้านใหม่"}
-                </p>
-              </div>
+                </p>              </div>
             ) : (
               <div className="mt-3 space-y-1.5">
                 <p className="text-lg font-bold leading-tight text-gray-900">
@@ -349,6 +361,17 @@ export default function ScanResultSheet({
                     <NavigationIcon className="h-4 w-4 flex-none text-gray-400" aria-hidden="true" />
                     <span className="font-mono text-xs text-gray-600">{form.tracking}</span>
                   </p>
+                ) : null}
+                {note.trim() ? (
+                  <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+                    <StickyNote className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className="block font-semibold">หมายเหตุ</span>
+                      <span className="mt-0.5 block whitespace-pre-line leading-relaxed">
+                        {note.trim()}
+                      </span>
+                    </span>
+                  </div>
                 ) : null}
                 {match && match.conflicts.length > 0 ? (
                   <p className="mt-1 text-[11px] text-amber-700">{match.conflicts.join(" • ")}</p>
@@ -458,6 +481,12 @@ export default function ScanResultSheet({
                           {candidate.house.phone ? `${candidate.house.phone} • ` : ""}
                           {candidate.house.address || "ไม่มีที่อยู่"}
                         </span>
+                        {candidate.house.note ? (
+                          <span className="mt-0.5 flex items-start gap-1 text-[11px] text-amber-700">
+                            <StickyNote className="mt-0.5 h-3 w-3 flex-none" aria-hidden="true" />
+                            <span className="line-clamp-2">{candidate.house.note}</span>
+                          </span>
+                        ) : null}
                       </span>
                       <span className="badge badge-slate">{LEVEL_LABEL[candidate.level]}</span>
                     </button>
@@ -497,6 +526,12 @@ export default function ScanResultSheet({
                           {candidate.house.phone ? `${candidate.house.phone} • ` : ""}
                           {candidate.house.address || "ไม่มีที่อยู่"}
                         </span>
+                        {candidate.house.note ? (
+                          <span className="mt-0.5 flex items-start gap-1 text-[11px] text-amber-700">
+                            <StickyNote className="mt-0.5 h-3 w-3 flex-none" aria-hidden="true" />
+                            <span className="line-clamp-2">{candidate.house.note}</span>
+                          </span>
+                        ) : null}
                       </span>
                       <span className="flex flex-none flex-col items-end gap-1">
                         <span className="badge badge-slate">{LEVEL_LABEL[candidate.level]}</span>
