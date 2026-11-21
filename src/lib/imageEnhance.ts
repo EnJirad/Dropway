@@ -41,9 +41,19 @@ export function sharpenCanvas(canvas: HTMLCanvasElement, amount = 0.45): void {
   ctx.putImageData(image, 0, 0);
 }
 
-/** ขอให้กล้องโฟกัส/ปรับแสงต่อเนื่อง (บางรุ่นต้องเรียกหลัง video เล่นแล้ว) */
+/** ขอความละเอียดสูงและโฟกัสต่อเนื่อง (ทำหลังวิดีโอเล่นแล้ว — ถ้าไม่รองรับก็ข้ามไป) */
 export async function tuneCameraTrack(track: MediaStreamTrack | null): Promise<void> {
   if (!track || typeof track.applyConstraints !== "function") return;
+  // 1) ขอความละเอียดสูงขึ้นแบบ ideal (ไม่บังคับ — เครื่องที่ไม่รับจะคงค่าเดิม)
+  try {
+    await track.applyConstraints({
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    });
+  } catch {
+    // ไม่รองรับความละเอียดนี้ — ใช้ค่าเดิมของกล้อง
+  }
+  // 2) ขอโฟกัส/แสงต่อเนื่อง
   try {
     // บางรุ่น/บางเบราว์เซอร์ไม่มีฟิลด์เหล่านี้ใน type — ส่งแบบ runtime แล้วกล้องจะเมินถ้าไม่รองรับ
     const advanced = [
